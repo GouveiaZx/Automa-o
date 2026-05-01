@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model Campaign {
+  id             String             @id @default(cuid())
+  name           String
+  description    String?
+  windowStart    String
+  windowEnd      String
+  minIntervalMin Int                @default(60)
+  maxIntervalMin Int                @default(180)
+  storiesPerDay  Int                @default(3)
+  reelsPerDay    Int                @default(1)
+  active         Boolean            @default(true)
+  createdAt      DateTime           @default(now())
+  accounts       InstagramAccount[]
+  media          MediaItem[]
+}
+
+model AdsPowerProfile {
+  id           String            @id @default(cuid())
+  adsPowerId   String            @unique
+  name         String
+  notes        String?
+  status       String            @default("idle")
+  lastOpenedAt DateTime?
+  account      InstagramAccount?
+}
+
+model InstagramAccount {
+  id                String           @id @default(cuid())
+  username          String           @unique
+  displayName       String?
+  bio               String?
+  websiteUrl        String?
+  status            String           @default("active")
+  lastFailureAt     DateTime?
+  consecutiveFails  Int              @default(0)
+  campaignId        String?
+  campaign          Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  adsPowerProfileId String?          @unique
+  adsPowerProfile   AdsPowerProfile? @relation(fields: [adsPowerProfileId], references: [id], onDelete: SetNull)
+  jobs              PostJob[]
+}
+
+model MediaItem {
+  id          String    @id @default(cuid())
+  type        String
+  filePath    String
+  caption     String?
+  linkUrl     String?
+  thumbnail   String?
+  campaignId  String
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  publishedAt DateTime?
+  usedCount   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  jobs        PostJob[]
+}
+
+model PostJob {
+  id           String           @id @default(cuid())
+  accountId    String
+  account      InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  mediaId      String
+  media        MediaItem        @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  type         String
+  status       String           @default("queued")
+  attempts     Int              @default(0)
+  scheduledFor DateTime
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  errorMessage String?
+  createdAt    DateTime         @default(now())
+
+  @@index([status, scheduledFor])
+  @@index([accountId, status])
+}
+
+model AutomationLog {
+  id        String   @id @default(cuid())
+  level     String
+  source    String
+  accountId String?
+  jobId     String?
+  message   String
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model AppSetting {
+  key   String @id
+  value String
+}

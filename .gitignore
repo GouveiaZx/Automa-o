@@ -1,0 +1,44 @@
+node_modules/
+.next/
+dist/
+build/
+*.log
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+# Prisma
+server/prisma/dev.db
+server/prisma/dev.db-journal
+server/prisma/*.db
+server/prisma/*.db-journal
+
+# Media uploads
+server/media/*
+!server/media/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/settings.json.example
+.idea/
+
+# Compiled JS in shared (we use TS direct)
+shared/src/*.js
+shared/src/*.js.map
+shared/src/*.d.ts
+
+# Test artifacts
+.playwright-mcp/
+test-results/
+playwright-report/
+scripts/inspect-*.mjs
+scripts/verify-*.mjs
+scripts/panel-smoke.mjs
+diagnostics-with-limit.png
+dashboard-final.png
+jobs-bulk-modal.png
