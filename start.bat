@@ -2,6 +2,9 @@
 chcp 65001 >nul
 title Instagram Automation - Operação
 
+REM Garante que rodamos sempre no diretorio do proprio .bat
+cd /d "%~dp0"
+
 echo ========================================
 echo  Subindo Instagram Automation
 echo ========================================

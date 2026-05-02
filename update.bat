@@ -2,6 +2,9 @@
 chcp 65001 >nul
 title Instagram Automation - Atualização
 
+REM Garante que rodamos sempre no diretorio do proprio .bat
+cd /d "%~dp0"
+
 echo ========================================
 echo  Atualizando Instagram Automation
 echo ========================================
