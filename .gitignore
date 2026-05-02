@@ -32,6 +32,9 @@ shared/src/*.js
 shared/src/*.js.map
 shared/src/*.d.ts
 
+# Pasta com arquivos personalizados pro cliente (com PAT embutido)
+enviar-gustavo/
+
 # Test artifacts
 .playwright-mcp/
 test-results/
