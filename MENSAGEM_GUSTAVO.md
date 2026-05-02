@@ -4,135 +4,124 @@
 
 Fala Gustavo, beleza? 👋
 
-Te mandei aqui o sistema pronto pra rodar aí no seu PC. Vou deixar o mais simples possível. Você só precisa **clicar 2 vezes em um arquivo** e o sistema baixa, instala e configura sozinho.
+Refiz o instalador pra ficar **bem mais simples**. Vou te mandar 1 arquivo só. Você só clica 2 vezes nele e o sistema baixa, instala, configura E já abre sozinho.
 
 ---
 
-## 📦 Você vai receber 2 coisas no zap
+## 📦 O que você vai receber
 
-1. Um arquivo chamado **`INSTALAR.bat`** (anexo)
-2. Uma **URL secreta** que começa com `https://x-access-token:...` (mensagem de texto)
+**1 único arquivo: `INSTALAR.bat`**
 
-A URL é o "endereço" do sistema dentro do GitHub. Guarda ela pra colar no instalador.
+(eu já configurei a chave de acesso dentro dele — você não precisa colar URL nenhuma)
 
 ---
 
 ## ⚠️ Antes de instalar — 3 coisas pra você saber
 
 ### 1. AdsPower **plano pago** é obrigatório
-A versão grátis trava após poucas aberturas/dia. Se você tem **10+ contas postando várias vezes/dia, sem o plano pago não roda**. Já tem o plano? Tudo certo.
+A versão grátis trava após poucas aberturas/dia. Se você tem **10+ contas postando várias vezes/dia, sem o plano pago não roda**.
 
 ### 2. Story 24h "real" do Instagram não rola pelo Web
-Limitação do próprio Instagram (não do código). Em conta nova, o Web não tem o criador de Story — só o app no celular. Pra contornar, **o sistema posta como POST permanente no feed**. Se quiser Story 24h de verdade, é pelo celular manual ou a gente desenvolve uma integração mobile depois.
+Limitação do próprio Instagram (não do código). Em conta nova, o Web não tem o criador de Story — só o app no celular. Pra contornar, **o sistema posta como POST permanente no feed**.
 
 ### 3. Link clicável só funciona NA BIO do perfil, não na caption
 Instagram não permite link clicável no texto do post. **Mas tem botão clicável na bio** — então o sistema atualiza o "Site" do perfil IG via painel (botão 🔄 ao lado de cada conta).
 
 ---
 
-## 🚀 Como instalar (super simples)
+## 🚀 Como instalar (5 cliques no total)
 
-### Passo 1 — Instalar Node.js
-Baixa e instala (next, next, next):
-**https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi**
+### Passo 1 — Salva o `INSTALAR.bat`
+Salva o arquivo que te mandei na **Área de Trabalho** ou **Downloads**.
 
-### Passo 2 — Instalar Git
-Baixa e instala (next, next, next, deixa tudo padrão):
-**https://git-scm.com/download/win**
+### Passo 2 — Clica 2x no `INSTALAR.bat`
 
-### Passo 3 — Abrir o `INSTALAR.bat`
-Salva o arquivo `INSTALAR.bat` que te mandei na sua **Área de Trabalho** ou **Downloads**.
+Vai aparecer uma janela preta. **Não fecha**.
 
-Clica 2 vezes nele.
+Se você **não tiver Node.js ou Git instalados**, ele vai te avisar e abrir a página pra baixar:
 
-Vai aparecer uma janela preta (PowerShell). Não fecha. Apenas siga as instruções.
+- **Node.js**: https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi
+- **Git**: https://git-scm.com/download/win
 
-### Passo 4 — Quando pedir, cole a URL secreta
-A janela vai pedir:
+Instala ambos (next, next, next), depois **clica 2x no INSTALAR.bat de novo**.
+
+### Passo 3 — Aguarda ~10 minutos
+A janela vai mostrar:
 ```
-URL:
-```
-**Cola aqui** a URL que te mandei (clica direito no PowerShell e seleciona "colar").
-
-### Passo 5 — Quando pedir, define uma senha
-Depois ele vai pedir:
-```
-Senha de admin:
-```
-**Digita uma senha** que você vai lembrar (ex: `meunomeesseguro123`). Aperta ENTER.
-
-### Passo 6 — Espera ~10 minutos
-Ele vai baixar e instalar tudo sozinho. Quando terminar, vai aparecer:
-```
-INSTALACAO CONCLUIDA!
+[1/5] Verificando Node.js...
+[2/5] Verificando Git...
+[3/5] Baixando o sistema...
+[4/5] Instalando componentes...
+[5/5] Configurando...
 ```
 
-E uma janela do Windows Explorer vai abrir mostrando a pasta `C:\Users\<seu-usuario>\automacao\`.
+Quando ver `INSTALACAO CONCLUIDA!` tá pronto.
+
+### Passo 4 — Quando perguntar "Quer iniciar agora? (S/N)"
+Digite **S** e tecla ENTER.
+
+### Passo 5 — O sistema abre sozinho
+Vão aparecer 3 janelas pretas (server, worker, painel). **NÃO FECHA NENHUMA** durante a operação.
+
+Em ~15 segundos, o seu navegador vai abrir em http://localhost:3000.
+
+**Login:**
+- Email: `admin@local`
+- Senha: `admin123`
+
+**Pode trocar a senha depois pelo painel.** ⚠️ Se for usar com dados sensíveis, troque já.
 
 ---
 
-## 🎬 Como usar todo dia
+## 🎬 Como usar todo dia (depois de instalado)
 
 ### 1. Abre o AdsPower
 Garanta que ele esteja rodando, com pelo menos 1 perfil tendo Instagram **logado manualmente** (com bio configurada, etc).
 
-### 2. Vai na pasta `automacao`
-Clica 2 vezes em **`start.bat`**.
+### 2. Clica no atalho na Área de Trabalho
+**"Instagram Automation"** — eu criei pra você na hora da instalação.
 
-3 janelinhas pretas vão abrir. **NÃO FECHA NENHUMA**. Aguarda 15 segundos.
+3 janelas pretas vão abrir. **NÃO FECHA NENHUMA**. Aguarda 15 segundos. O navegador abre sozinho.
 
-### 3. Abre o navegador em
-**http://localhost:3000**
-
-Login: `admin@local`
-Senha: a que você escolheu na instalação
-
-### 4. Cadastrar uma vez:
-- **Diagnóstico** → Recarregar (deve mostrar verde)
+### 3. No painel:
+- **Diagnóstico** → "Recarregar" (deve mostrar verde)
 - **Perfis AdsPower** → cadastra com o `user_id` real (coluna ID do AdsPower)
 - **Contas Instagram** → cadastra a conta IG, **bio**, **Site (link clicável)**, vincula o perfil
 - **Diagnóstico** → "Testar" no perfil → confirma `logado ✓`
 
-### 5. Pra postar
+### 4. Pra postar
 - **Mídia** → upload do conteúdo (jpg/mp4)
 - **Fila de jobs** → "Agendar postagem" → escolhe conta + mídia
 - Acompanha em **Logs**
 
-### 6. Pra atualizar bio + site no IG
+### 5. Pra atualizar bio + site no IG
 **Contas Instagram** → botão 🔄 ao lado da conta. Sistema abre AdsPower e atualiza sozinho.
 
 ---
 
-## 🆘 Se der algum erro
+## 🆘 Se der ERRO durante a instalação
 
-**Antes de me chamar:**
-1. Olha **Logs** no painel — última linha vai dizer o erro
-2. Olha em `C:\Users\<seu-usuario>\automacao\server\media\debug\` — pode ter PNG mostrando o que travou
+**Roda o `DIAGNOSTICAR.bat`** (eu te mando junto). Ele vai gerar um arquivo `automacao-diagnostico.txt` na sua pasta de usuário.
 
-**Me manda no zap:**
-- Print do erro
-- O PNG mais recente da `media\debug\`
-- Que ação você tava tentando
-
-**99% das coisas eu resolvo daqui** sem precisar acessar seu PC. Mando atualização e você roda `update.bat`.
+**Manda esse arquivo pra mim no zap** + descrição do que apareceu na janela. Em 90% dos casos eu identifico o problema e te mando uma versão corrigida.
 
 ---
 
 ## 🔄 Quando eu te avisar de uma versão nova
 
-1. Fecha as 3 janelinhas do sistema (se estiverem abertas)
+1. Fecha as 3 janelas do sistema
 2. Vai na pasta `C:\Users\<seu-usuario>\automacao\`
-3. Clica 2 vezes em **`update.bat`**
+3. Clica 2x em **`update.bat`**
 4. Aguarda terminar
-5. Roda `start.bat` de novo
+5. Abre o atalho "Instagram Automation" da Área de Trabalho de novo
 
 ---
 
 ## 💬 Resumo
 
-- Versão `v1.0.0` é o ponto de partida
-- Tem tudo da spec original implementado
-- **1 post real publicado e validado** aqui
+- Versão `v1.0.0` — ponto de partida
+- Tudo da spec original implementado
+- **1 post real validado** aqui (foto subiu de fato no IG)
 - Pode dar bug pequeno na primeira semana (ajuste de layout do IG conforme você usa) — eu resolvo rápido
 
 Bora! 🚀

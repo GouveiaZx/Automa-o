@@ -1,184 +1,118 @@
-# 🚀 Roteiro de entrega — Eduardo → cliente (Gustavo)
+# 🚀 Roteiro de entrega — Eduardo → Gustavo
 
-Esse doc é **só pra você (Eduardo)**. Cliente recebe o `MENSAGEM_GUSTAVO.md` + `INSTALAR.bat`.
+Esse doc é **só pra você (Eduardo)**. Cliente recebe `MENSAGEM_GUSTAVO.md` + `INSTALAR.bat` + `DIAGNOSTICAR.bat`.
 
 ---
 
-## 🔑 ANTES DE TUDO — Gerar o PAT (token de acesso ao repo privado)
+## 🔑 ANTES DE TUDO — Customizar o `INSTALAR.bat` com seu token
 
-Como o repo `GouveiaZx/Automa-o` é privado, o Gustavo precisa de um **token** pra clonar. Você gera 1 vez e embute na URL.
+O `INSTALAR.bat` no repo está com placeholder `COLE_SEU_TOKEN_AQUI`. Você precisa criar uma versão personalizada antes de mandar pro Gustavo.
 
-### Passo a passo
+### Passo 1 — Gerar PAT (Personal Access Token) no GitHub
 
 1. Vai em <https://github.com/settings/personal-access-tokens/new> (Fine-grained tokens)
 2. Preenche:
    - **Token name**: `gustavo-automacao-deploy`
    - **Expiration**: `90 days` (renovável)
    - **Repository access**: `Only select repositories` → escolhe `GouveiaZx/Automa-o`
-   - **Permissions** → Repository permissions:
-     - **Contents**: `Read-only`
-     - **Metadata**: `Read-only` (já vem)
-   - Salva
-3. Copia o token (começa com `github_pat_...` ou `ghp_...`). **Anota num lugar seguro** — só dá pra ver agora.
-4. **A URL secreta** que você vai mandar pro Gustavo é:
-   ```
-   https://x-access-token:SEU_TOKEN_AQUI@github.com/GouveiaZx/Automa-o.git
-   ```
-   Substitui `SEU_TOKEN_AQUI` pelo token copiado.
+   - **Permissions** → Repository permissions → **Contents**: `Read-only`
+3. Clica **Generate token**
+4. **Copia o token** (começa com `github_pat_...` ou `ghp_...`). Anota num lugar seguro — só dá pra ver agora.
 
-### Exemplo (com token fake só pra ilustrar)
+### Passo 2 — Customizar `INSTALAR.bat`
 
-```
-https://x-access-token:github_pat_11ABCDEFG_xxxx@github.com/GouveiaZx/Automa-o.git
+Abre `INSTALAR.bat` no Notepad e troca a linha:
+
+```bat
+set REPO_URL=https://x-access-token:COLE_SEU_TOKEN_AQUI@github.com/GouveiaZx/Automa-o.git
 ```
 
-> ⚠️ **Não compartilhe esse token publicamente.** Mande pro Gustavo no WhatsApp privado e peça pra ele não passar pra ninguém. Se vazar, você revoga em <https://github.com/settings/personal-access-tokens> e gera outro.
+por:
+
+```bat
+set REPO_URL=https://x-access-token:SEU_TOKEN_REAL_AQUI@github.com/GouveiaZx/Automa-o.git
+```
+
+Substitui `SEU_TOKEN_REAL_AQUI` pelo token que você copiou.
+
+**Salva como `INSTALAR.bat` numa pasta separada** (ex: `C:\Users\GouveiaRx\Desktop\enviar-gustavo\`) — esse é o arquivo que vai pro Gustavo.
+
+⚠️ **Não commite essa versão personalizada no repo.** Token é segredo.
 
 ---
 
 ## 📩 O que mandar pro Gustavo no zap
 
-Manda 3 mensagens separadas:
+3 mensagens:
 
-### Mensagem 1 — Anexo
-- Arquivo: **`INSTALAR.bat`** (está na raiz do projeto, manda como anexo)
+### Mensagem 1 — Anexos
+- **`INSTALAR.bat`** (a versão personalizada com seu token)
+- **`DIAGNOSTICAR.bat`** (cópia direta do repo)
 
-### Mensagem 2 — A URL secreta
-```
-URL pra colar no instalador (NÃO compartilha com ninguém):
+### Mensagem 2 — Texto
+Cola o conteúdo de `MENSAGEM_GUSTAVO.md` (o passo a passo dele).
 
-https://x-access-token:SEU_TOKEN_AQUI@github.com/GouveiaZx/Automa-o.git
-```
-
-### Mensagem 3 — O passo a passo
-Cola o conteúdo do **`MENSAGEM_GUSTAVO.md`** (versão pronta com tudo bem mastigado).
+### Mensagem 3 — Aviso opcional de segurança
+> "Esses arquivos têm um token meu de acesso ao GitHub. Não compartilha com ninguém. Se você não usar mais o sistema, me avisa que eu cancelo o token."
 
 ---
 
-## Cenário A — Você instala remotamente (recomendado)
+## 🐛 Se o Gustavo der erro na instalação
 
-Você usa AnyDesk/TeamViewer pra entrar na máquina do cliente e configura tudo.
+1. Pede pra ele rodar **`DIAGNOSTICAR.bat`** (clique 2x)
+2. Vai ser gerado `C:\Users\<usuario-dele>\automacao-diagnostico.txt`
+3. Pede pra ele te mandar esse arquivo no zap
+4. Com base nele, você identifica o problema:
+   - Node.js / Git não instalados → manda link
+   - Clone falhou → token expirou ou URL errada → gera novo PAT
+   - npm install falhou → problema de rede / proxy / antivírus
+   - Pasta `automacao` existe mas vazia → permissões / disk full
+   - Etc.
 
-### Passo 1 — Preparar o pacote local (você, antes de entrar)
-
-Na sua máquina, na pasta do projeto:
-
-```powershell
-# Limpar artefatos pesados que serão regerados na máquina do cliente
-Remove-Item -Recurse -Force node_modules, .next, dist, server\dist, client\.next -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force server\node_modules, client\node_modules, shared\node_modules -ErrorAction SilentlyContinue
-# Manter prisma\dev.db zerado pra cliente
-Remove-Item server\prisma\dev.db, server\prisma\dev.db-journal -ErrorAction SilentlyContinue
-# Limpar mídia de teste
-Remove-Item -Recurse -Force server\media\debug -ErrorAction SilentlyContinue
-Get-ChildItem server\media -Filter "*.mp4","*.jpg","*.png" -ErrorAction SilentlyContinue | Remove-Item
-```
-
-Compactar a pasta inteira em `automacao-cliente.zip` (~5MB sem node_modules).
-
-### Passo 2 — Na máquina do cliente
-
-1. **Verificar AdsPower**: abrir o aplicativo, confirmar que tem o plano pago (ou no mínimo plano que aceite N perfis)
-2. Confirmar que o cliente já tem 1+ perfil com IG logado manualmente
-3. Pedir os `user_id` dos perfis (coluna ID no AdsPower)
-
-### Passo 3 — Instalar Node.js (se não tiver)
-
-<https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi>
-
-### Passo 4 — Extrair zip e rodar install
-
-```powershell
-cd C:\automacao-instagram
-.\install.bat
-```
-
-(~5 min). Confere mensagem "Instalacao concluida".
-
-### Passo 5 — Editar `server\.env`
-
-```env
-AUTOMATION_MODE=real
-JWT_SECRET=<string-aleatoria-32-chars>
-ADMIN_BOOTSTRAP_PASSWORD=<senha-pro-cliente>
-```
-
-Anote a senha.
-
-### Passo 6 — Subir e validar
-
-```powershell
-.\start.bat
-```
-
-Acessa <http://localhost:3000>, login admin@local + senha do .env.
-
-Diagnóstico → "Recarregar" → deve listar perfis AdsPower.
-
-Cadastrar 1 perfil real + 1 conta IG vinculada.
-
-Diagnóstico → "Testar" no perfil → `logado ✓`.
-
-### Passo 7 — Smoke test com 1 mídia real
-
-Pedir 1 mp4 ou jpg do cliente. Upload via Mídia. Agendar via Fila de jobs.
-
-Acompanhar nos Logs. Quando ver `done`, abrir o IG no AdsPower e confirmar que o post apareceu.
-
-### Passo 8 — Validação progressiva
-
-`Configurações` → `MAX_ACTIVE_ACCOUNTS=1` → cliente opera 24h.
-
-Você acompanha remoto. Se OK, sobe pra 3, 7, 10, 20.
-
-### Passo 9 — Entregar credenciais
-
-Anota num doc no Notion/papel:
-- URL do painel: <http://localhost:3000>
-- Login: admin@local
-- Senha: <a definida>
-- Como subir: `start.bat`
-- Como atualizar: `update.bat` (manda zip novo, extrai por cima)
+5. Versão corrigida do INSTALAR.bat → manda novamente
 
 ---
 
-## Cenário B — Cliente instala sozinho (zip + instruções)
+## 🔄 Atualizando o sistema (workflow)
 
-Manda o zip + o `SETUP_CLIENTE.md` por e-mail/Drive.
+Você desenvolveu uma correção:
 
-Cliente:
-1. Lê `SETUP_CLIENTE.md`
-2. Instala Node.js
-3. Extrai zip
-4. Edita `server\.env`
-5. Roda `install.bat`
-6. Roda `start.bat`
+1. Edita o código local
+2. `git commit -m "fix: ..."` + `git push origin main`
+3. Avisa o Gustavo no zap: **"Versão nova subiu, roda update.bat"**
+4. Ele vai na pasta `automacao` e clica 2x em `update.bat`
+5. O `update.bat` faz `git pull origin main` (usando o token salvo no `.git/config` dele) + `npm install` + `db:migrate`
 
-**Você fica disponível no WhatsApp** pra resolver problemas que aparecerem.
+**Fluxo perfeito** — sem zip, sem reenvio de arquivo.
 
 ---
 
-## Cenário C — Você roda 100% local na sua máquina, cliente acessa via rede
+## 🔒 Quando o token expirar (90 dias)
 
-Se o cliente confiar em você operar:
-- Sistema fica na sua máquina
-- Edita `server\.env`: `HOST=0.0.0.0` (já é) e abre porta 3010 no firewall
-- Cliente acessa `http://<seu-ip-publico>:3000` (precisa expor com Cloudflare Tunnel ou ngrok)
+1. Você gera novo PAT em <https://github.com/settings/personal-access-tokens>
+2. Pede pro Gustavo abrir `C:\Users\<usuario>\automacao\.git\config` no Notepad
+3. Procura a linha `url = https://x-access-token:TOKEN_VELHO@github.com/...`
+4. Substitui `TOKEN_VELHO` pelo novo
+5. Salva
+6. Pronto, próximo `update.bat` funciona
 
-**Não recomendo pra MVP** — adiciona complexidade de rede. Cenário A é mais limpo.
+OU mais simples:
+
+1. Você gera novo PAT
+2. Manda novo `INSTALAR.bat` personalizado
+3. Pede pro Gustavo executar de novo (ele vai detectar pasta existe e fazer git pull, atualizando o remote)
 
 ---
 
-## Checklist final antes de entregar
+## 📋 Checklist antes de mandar (primeira vez)
 
-- [ ] `npm run typecheck` passa em todos os workspaces
-- [ ] `npm run build` gera dist sem erro
-- [ ] `server\.env.example` tem todas as variáveis documentadas
-- [ ] `SETUP_CLIENTE.md` atualizado
-- [ ] `install.bat`, `start.bat`, `update.bat` testados na sua máquina
-- [ ] AdsPower do cliente: plano confirmado (paido se 10+ contas)
-- [ ] Cliente tem 1+ perfil com IG logado manualmente
-- [ ] Backup combinado: cliente sabe que `server\prisma\dev.db` é o banco e pode ser copiado pra backup
+- [ ] PAT gerado no GitHub com escopo correto (`Contents: Read`, repo `Automa-o`)
+- [ ] `INSTALAR.bat` editado com token real (NÃO commitar essa versão)
+- [ ] `DIAGNOSTICAR.bat` separado pra mandar junto
+- [ ] `MENSAGEM_GUSTAVO.md` lida e ajustada se quiser personalizar
+- [ ] AdsPower do cliente: plano confirmado (pago se 10+ contas)
+- [ ] Cliente vai logar IG manualmente nos perfis antes de testar
+- [ ] Você disponível no zap nas próximas 24h pra suporte
 
 ---
 
@@ -187,27 +121,31 @@ Se o cliente confiar em você operar:
 Cliente vai te contatar quando:
 - IG mudar layout (selectors quebram) → ele te manda PNG de `server\media\debug\*.png`
 - Conta vai pra `paused` repetidamente → IG pode ter pedido nova verificação
-- Sistema travou → fechar 3 janelas e rodar `start.bat` de novo
+- Sistema travou → fechar 3 janelas e abrir o atalho "Instagram Automation" de novo
 
 Manter um chat ativo com cliente nos primeiros dias é normal.
 
 ---
 
-## Coisas que o cliente NÃO vai conseguir resolver sozinho (sua responsabilidade)
+## 🔥 Limitações conhecidas (avise o cliente)
 
-| Problema | Solução |
+| Limitação | Workaround |
 |---|---|
-| Selectors do IG quebraram | Você atualiza `server\src\automation\real-driver.ts` e manda zip novo + `update.bat` |
-| Bug no painel | Você corrige + manda update |
-| Quer feature nova | Você desenvolve + manda update |
+| AdsPower grátis = ~5 aberturas/dia | Plano pago obrigatório |
+| Story 24h não funciona via Web em conta nova | Sistema posta como POST permanente; story real só via mobile |
+| Caption não tem link clicável (limitação IG) | Sistema concatena link no fim da caption + atualiza bio |
+| Reel exige MP4 vertical | Validar antes de subir |
+| Tela LGPD do Meta em conta nova | Cliente completa manual 1x no AdsPower |
 
 ---
 
 ## Versionamento
 
-Sugestão: a cada update, criar uma tag/versão no `package.json` raiz e mandar no chat:
-```
-v1.2.0 - Correção do botão Compartilhar
+A cada update significativo, criar uma tag:
+```bash
+git tag v1.1.0 -m "fix: ajuste seletor 'Compartilhar'"
+git push --tags
 ```
 
-Cliente extrai zip novo por cima e roda `update.bat`.
+E no zap pro Gustavo:
+> "v1.1.0 - corrigi o botão Compartilhar. Roda `update.bat`."
