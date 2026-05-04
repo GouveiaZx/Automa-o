@@ -15,7 +15,13 @@ echo.
 pause
 
 echo.
-echo [1/4] Puxando nova versao do GitHub...
+echo [1/5] Matando processos node antigos pra liberar arquivos...
+REM Mata todos node.exe pra evitar EPERM no prisma generate (query_engine.dll travado)
+powershell -NoProfile -Command "Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>nul
+timeout /t 2 /nobreak >nul
+
+echo.
+echo [2/5] Puxando nova versao do GitHub...
 git pull origin main
 if errorlevel 1 (
     echo [AVISO] git pull falhou. Pode ser conflito local.
@@ -26,7 +32,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/4] Atualizando dependencias...
+echo [3/5] Atualizando dependencias...
 call npm install
 if errorlevel 1 (
     echo [ERRO] npm install falhou.
@@ -35,14 +41,14 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/4] Aplicando migrations do banco (se houver)...
+echo [4/5] Aplicando migrations do banco (se houver)...
 call npm run db:migrate
 if errorlevel 1 (
     echo [AVISO] db:migrate retornou erro.
 )
 
 echo.
-echo [4/4] Verificando build...
+echo [5/5] Verificando build...
 call npm run typecheck --workspaces --if-present
 if errorlevel 1 (
     echo [AVISO] typecheck retornou erro. Pode haver problemas.
