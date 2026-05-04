@@ -1,8 +1,35 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Page, Locator } from 'playwright';
 
 export const DEBUG_DIR = join(process.cwd(), 'media', 'debug');
+
+const DEBUG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias
+let lastCleanupAt = 0;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // no maximo 1x/hora
+
+export async function cleanupOldDebug(retentionMs = DEBUG_RETENTION_MS): Promise<number> {
+  let removed = 0;
+  try {
+    const entries = await readdir(DEBUG_DIR);
+    const cutoff = Date.now() - retentionMs;
+    for (const name of entries) {
+      const full = join(DEBUG_DIR, name);
+      try {
+        const st = await stat(full);
+        if (st.isFile() && st.mtimeMs < cutoff) {
+          await unlink(full);
+          removed++;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* pasta pode nao existir, ok */
+  }
+  return removed;
+}
 
 export async function humanDelay(min = 300, max = 1200): Promise<void> {
   const ms = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -82,6 +109,11 @@ export async function captureDebug(
 ): Promise<{ screenshot: string | null; html: string | null }> {
   try {
     await mkdir(DEBUG_DIR, { recursive: true });
+    // Cleanup oportunista: 1x por hora, apaga screenshots > 7 dias
+    if (Date.now() - lastCleanupAt > CLEANUP_INTERVAL_MS) {
+      lastCleanupAt = Date.now();
+      void cleanupOldDebug();
+    }
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const safeTag = tag.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60);
     const pngName = `${safeTag}-${ts}.png`;

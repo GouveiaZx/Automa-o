@@ -51,7 +51,11 @@ export async function diagnosticsRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post('/diagnostics/test-profile/:profileId', async (req, reply) => {
+  app.post('/diagnostics/test-profile/:profileId', {
+    // Operacao cara (abre AdsPower, conecta CDP, navega IG). 5/min eh suficiente.
+    // allowList false: aplica mesmo de localhost (evita spam acidental via UI).
+    config: { rateLimit: { max: 5, timeWindow: '1 minute', allowList: () => false } },
+  }, async (req, reply) => {
     const { profileId } = req.params as { profileId: string };
     const profile = await prisma.adsPowerProfile.findUnique({
       where: { id: profileId },

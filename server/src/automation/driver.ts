@@ -23,6 +23,8 @@ export interface AutomationDriver {
   postReel(args: PostArgs): Promise<DriverResult>;
   updateBio(args: BioArgs): Promise<DriverResult>;
   closeProfile(adsPowerId: string): Promise<void>;
+  /** IDs de perfis AdsPower com sessao Playwright atualmente aberta. */
+  getOpenSessionIds?(): string[];
 }
 
 import { mockDriver } from './mock-driver.js';

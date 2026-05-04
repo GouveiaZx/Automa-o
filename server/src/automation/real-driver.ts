@@ -13,6 +13,37 @@ interface OpenSession {
 
 const sessions = new Map<string, OpenSession>();
 
+// Mutex por adsPowerId: serializa openProfile/closeProfile concorrentes pro
+// MESMO perfil. Sem isso, 2 calls simultaneas (worker + diagnostico, ou 2 jobs)
+// podem abrir 2 browsers AdsPower e perder uma referencia → Chromium orfao.
+const profileMutex = new Map<string, Promise<unknown>>();
+
+function withProfileLock<T>(adsPowerId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = profileMutex.get(adsPowerId) ?? Promise.resolve();
+  const next = prev.then(fn, fn); // roda fn mesmo se prev rejeitou
+  // mantem o lock ate fn terminar; remove se for o ultimo
+  profileMutex.set(
+    adsPowerId,
+    next.finally(() => {
+      if (profileMutex.get(adsPowerId) === next) profileMutex.delete(adsPowerId);
+    })
+  );
+  return next;
+}
+
+// Fecha browser/context/page com timeout para evitar deadlock do Playwright/CDP.
+async function closeSession(s: OpenSession, timeoutMs = 10_000): Promise<void> {
+  const closeAll = (async () => {
+    await s.page.close().catch(() => undefined);
+    await s.context.close().catch(() => undefined);
+    await s.browser.close().catch(() => undefined);
+  })();
+  await Promise.race([
+    closeAll,
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 async function withRetries<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -29,7 +60,15 @@ async function withRetries<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
 async function getPage(adsPowerId: string): Promise<Page> {
   const s = sessions.get(adsPowerId);
   if (!s) throw new Error(`session_not_open:${adsPowerId}`);
-  return s.page;
+  // Health check: se browser caiu (AdsPower restart, CDP perdeu conexao),
+  // a sessao guardada eh stale. evaluate() falha rapido nesse caso.
+  try {
+    await s.page.evaluate(() => 1);
+    return s.page;
+  } catch {
+    sessions.delete(adsPowerId);
+    throw new Error(`session_stale:${adsPowerId}`);
+  }
 }
 
 /**
@@ -119,7 +158,15 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         if (captionField) {
           await captionField.click();
           await humanDelay(200, 500);
-          await page.keyboard.type(captionFinal.slice(0, 2200), { delay: 15 });
+          const captionText = captionFinal.slice(0, 2200);
+          // textarea: usa fill (preserva escape de aspas/emojis sem quirks de keyboard).
+          // contenteditable: precisa de keyboard.type pra disparar onInput do React.
+          const tagName = await captionField.evaluate((el) => el.tagName).catch(() => '');
+          if (tagName === 'TEXTAREA') {
+            await captionField.fill(captionText);
+          } else {
+            await page.keyboard.type(captionText, { delay: 15 });
+          }
         }
       } catch {
         /* segue mesmo sem caption */
@@ -127,15 +174,38 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     }
     await humanDelay(800, 1500);
 
-    // Step 6: Click "Compartilhar"
+    // Step 6: Click "Compartilhar" (com fallbacks pra IG trocar label)
+    let shareClicked = false;
+    const shareSelectors = [
+      'div[role="dialog"] div[role="button"]:has-text("Compartilhar")',
+      'div[role="dialog"] div[role="button"]:has-text("Share")',
+      'div[role="dialog"] div[role="button"]:has-text("Publicar")',
+      'div[role="dialog"] div[role="button"]:has-text("Post")',
+      'div[role="dialog"] button:has-text("Compartilhar")',
+      'div[role="dialog"] button:has-text("Share")',
+      'div[role="dialog"] button:has-text("Publicar")',
+      'div[role="dialog"] button:has-text("Post")',
+    ];
     try {
-      await page
-        .getByRole('button', { name: /^Compartilhar$|^Share$/i })
-        .first()
-        .click({ timeout: 10000 });
+      const shareBtn = await findAny(page, shareSelectors, 8000);
+      if (shareBtn) {
+        await shareBtn.click({ timeout: 10000 });
+        shareClicked = true;
+      } else {
+        // ultimo fallback: getByRole com regex ampla
+        await page
+          .getByRole('button', { name: /^(Compartilhar|Share|Publicar|Post|Enviar)$/i })
+          .first()
+          .click({ timeout: 8000 });
+        shareClicked = true;
+      }
     } catch {
       const dbg = await captureDebug(page, 'no-share-btn');
       return { ok: false, reason: `share_button_not_found ${dbg.screenshot ?? ''}` };
+    }
+    if (!shareClicked) {
+      const dbg = await captureDebug(page, 'no-share-btn');
+      return { ok: false, reason: `share_button_not_clicked ${dbg.screenshot ?? ''}` };
     }
 
     // Step 7: aguarda confirmação de sucesso. Critérios (qualquer um basta):
@@ -180,9 +250,14 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
 export const realDriver: AutomationDriver = {
   async openProfile(adsPowerId: string): Promise<DriverResult> {
-    if (sessions.has(adsPowerId)) {
-      await this.closeProfile(adsPowerId).catch(() => undefined);
-    }
+    return withProfileLock(adsPowerId, async () => {
+      // Cleanup previo (sob o mesmo lock — sem race com outras chamadas)
+      const prev = sessions.get(adsPowerId);
+      if (prev) {
+        sessions.delete(adsPowerId);
+        await closeSession(prev);
+        await adsPowerClient.stopBrowser(adsPowerId).catch(() => undefined);
+      }
     try {
       const start = await withRetries(() => adsPowerClient.startBrowser(adsPowerId));
       const wsEndpoint = start.ws.puppeteer;
@@ -214,6 +289,7 @@ export const realDriver: AutomationDriver = {
       });
       return { ok: false, reason: msg };
     }
+    });
   },
 
   async ensureLoggedIn(adsPowerId: string, igUsername: string): Promise<boolean> {
@@ -383,13 +459,15 @@ export const realDriver: AutomationDriver = {
   },
 
   async closeProfile(adsPowerId: string): Promise<void> {
-    const s = sessions.get(adsPowerId);
-    sessions.delete(adsPowerId);
-    if (s) {
-      await s.page.close().catch(() => undefined);
-      await s.context.close().catch(() => undefined);
-      await s.browser.close().catch(() => undefined);
-    }
-    await adsPowerClient.stopBrowser(adsPowerId).catch(() => undefined);
+    return withProfileLock(adsPowerId, async () => {
+      const s = sessions.get(adsPowerId);
+      sessions.delete(adsPowerId);
+      if (s) await closeSession(s); // com timeout 10s
+      await adsPowerClient.stopBrowser(adsPowerId).catch(() => undefined);
+    });
+  },
+
+  getOpenSessionIds(): string[] {
+    return Array.from(sessions.keys());
   },
 };

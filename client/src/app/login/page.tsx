@@ -11,7 +11,7 @@ import { api, setToken } from '@/lib/api';
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('admin@local');
-  const [password, setPassword] = useState('admin123');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
+import rateLimit from '@fastify/rate-limit';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { env } from './env.js';
@@ -31,6 +32,16 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(multipart, {
     limits: { fileSize: 250 * 1024 * 1024 },
+  });
+
+  // Rate limit global frouxo (300 req/min por IP) — endpoints sensiveis aplicam
+  // limites mais apertados via { config: { rateLimit: { max, timeWindow } } } na rota.
+  await app.register(rateLimit, {
+    global: true,
+    max: 300,
+    timeWindow: '1 minute',
+    allowList: ['127.0.0.1', '::1'],
+    keyGenerator: (req) => (req.headers['x-forwarded-for'] as string) || req.ip,
   });
 
   await app.register(authPlugin);

@@ -3,6 +3,13 @@ import { settingUpdateSchema } from '@automacao/shared';
 import { prisma } from '../../prisma.js';
 import { env } from '../../env.js';
 
+// Whitelist de chaves AppSetting validas. Evita poluicao do DB com chaves
+// arbitrarias via PUT (ex: __proto__, constructor, typo). Adicione aqui ao
+// criar novas configuracoes runtime.
+const ALLOWED_SETTING_KEYS = new Set([
+  'MAX_ACTIVE_ACCOUNTS',
+]);
+
 export async function settingsRoutes(app: FastifyInstance) {
   app.addHook('preHandler', app.authenticate);
 
@@ -21,6 +28,12 @@ export async function settingsRoutes(app: FastifyInstance) {
 
   app.put('/settings/:key', async (req, reply) => {
     const { key } = req.params as { key: string };
+    if (!ALLOWED_SETTING_KEYS.has(key)) {
+      return reply.status(400).send({
+        error: 'unknown_setting_key',
+        allowed: Array.from(ALLOWED_SETTING_KEYS),
+      });
+    }
     const parsed = settingUpdateSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_input' });
     return prisma.appSetting.upsert({

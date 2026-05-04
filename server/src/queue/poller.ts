@@ -1,13 +1,34 @@
 import { prisma } from '../prisma.js';
 import { env } from '../env.js';
-import { appLog } from '../logger.js';
+import { appLog, cleanupOldLogs } from '../logger.js';
 import { processJob } from './processor.js';
 
 const inFlight = new Set<string>();
 const accountInFlight = new Set<string>();
 let stopped = false;
+let lastLogCleanupAt = 0;
+const LOG_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 1x/dia
 
 export async function startWorker(): Promise<void> {
+  // Recovery de jobs orfaos: se o processo crashou enquanto um job estava 'running'
+  // ele fica preso pra sempre. Aqui devolvemos ao 'queued' qualquer job que ficou
+  // 'running' por mais de 30 min (post real completo dura < 5 min, com folga).
+  const ORPHAN_THRESHOLD_MS = 30 * 60 * 1000;
+  const orphans = await prisma.postJob.updateMany({
+    where: {
+      status: 'running',
+      startedAt: { lte: new Date(Date.now() - ORPHAN_THRESHOLD_MS) },
+    },
+    data: { status: 'queued', startedAt: null },
+  });
+  if (orphans.count > 0) {
+    await appLog({
+      source: 'worker',
+      level: 'warn',
+      message: `Recovery: ${orphans.count} job(s) orfaos voltaram para 'queued' (provavel crash anterior)`,
+    });
+  }
+
   await appLog({
     source: 'worker',
     level: 'info',
@@ -48,6 +69,16 @@ async function getAllowedAccountIds(cap: number): Promise<Set<string>> {
 }
 
 async function processOnce(): Promise<void> {
+  // Cleanup oportunista de logs antigos (1x/dia)
+  if (Date.now() - lastLogCleanupAt > LOG_CLEANUP_INTERVAL_MS) {
+    lastLogCleanupAt = Date.now();
+    void cleanupOldLogs()
+      .then((n) => {
+        if (n > 0) console.log(`[worker] cleanup: ${n} log(s) antigo(s) apagado(s)`);
+      })
+      .catch((e) => console.error('[worker] cleanup logs falhou:', e));
+  }
+
   // promove jobs em retry cujo scheduledFor já passou
   await prisma.postJob.updateMany({
     where: { status: 'retry', scheduledFor: { lte: new Date() } },
@@ -66,6 +97,9 @@ async function processOnce(): Promise<void> {
       status: 'queued',
       scheduledFor: { lte: new Date() },
       accountId: { notIn: Array.from(accountInFlight) },
+      // Evita pegar jobs de contas paused/needs_login/error: o processor
+      // reagendaria pra 5 min depois, gerando loop infinito de re-queue.
+      account: { status: 'active' },
     },
     orderBy: { scheduledFor: 'asc' },
     take: slots * 5,

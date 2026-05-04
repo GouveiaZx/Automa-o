@@ -141,7 +141,10 @@ export async function jobRoutes(app: FastifyInstance) {
     return { count: created.length, jobs: created };
   });
 
-  app.post('/jobs/:id/retry', async (req, reply) => {
+  app.post('/jobs/:id/retry', {
+    // Evita spam de retry no mesmo job (UI ou script). 30/min eh folgado pra uso normal.
+    config: { rateLimit: { max: 30, timeWindow: '1 minute', allowList: () => false } },
+  }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const existing = await prisma.postJob.findUnique({ where: { id } });
     if (!existing) return reply.status(404).send({ error: 'not_found' });
