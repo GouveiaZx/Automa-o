@@ -72,9 +72,184 @@ async function getPage(adsPowerId: string): Promise<Page> {
 }
 
 /**
+ * Tenta postar como STORY de verdade (24h) via /stories/create/.
+ * Retorna:
+ *  - { ok: true } se postou
+ *  - { ok: false, reason: 'story_not_available' } se IG nao deu acesso (conta nova/sem permissao)
+ *  - { ok: false, reason: '...' } com detalhes se foi outro erro
+ */
+async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
+  const page = await getPage(args.adsPowerId);
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined);
+    await page.goto('https://www.instagram.com/stories/create/', { waitUntil: 'domcontentloaded' });
+    await humanDelay(2500, 4000);
+
+    // Detectar se IG redirecionou (story create indisponivel)
+    const finalUrl = page.url();
+    if (!finalUrl.includes('/stories/create')) {
+      return { ok: false, reason: 'story_not_available' };
+    }
+
+    // Procura input de upload — se nao tiver, story create nao carregou
+    let uploaded = false;
+    try {
+      const inputFile = page.locator('input[type="file"]').first();
+      await inputFile.waitFor({ timeout: 8000, state: 'attached' });
+      await inputFile.setInputFiles(args.filePath);
+      uploaded = true;
+    } catch {
+      // Tenta via filechooser (alguns layouts pedem clique antes)
+      try {
+        const addBtn = await findAny(
+          page,
+          [
+            'button:has-text("Adicionar")',
+            'button:has-text("Add")',
+            'div[role="button"]:has-text("Adicionar")',
+            'div[role="button"]:has-text("Add")',
+          ],
+          5000
+        );
+        if (addBtn) {
+          const [chooser] = await Promise.all([
+            page.waitForEvent('filechooser', { timeout: 8000 }),
+            addBtn.click({ timeout: 5000 }),
+          ]);
+          await chooser.setFiles(args.filePath);
+          uploaded = true;
+        }
+      } catch { /* segue */ }
+    }
+
+    if (!uploaded) {
+      return { ok: false, reason: 'story_not_available' };
+    }
+
+    await humanDelay(4000, 7000);
+
+    // Se houver linkUrl, tenta adicionar sticker de Link (otima feature do IG story)
+    if (args.linkUrl) {
+      try {
+        const stickerBtn = await findAny(
+          page,
+          [
+            'button[aria-label*="Adesivo" i]',
+            'button[aria-label*="Sticker" i]',
+            'svg[aria-label*="Adesivo" i]',
+            'svg[aria-label*="Sticker" i]',
+          ],
+          4000
+        );
+        if (stickerBtn) {
+          await stickerBtn.click().catch(() => undefined);
+          await humanDelay(800, 1500);
+          const linkOption = await findAny(
+            page,
+            [
+              'button:has-text("Link")',
+              'div[role="button"]:has-text("Link")',
+            ],
+            3000
+          );
+          if (linkOption) {
+            await linkOption.click().catch(() => undefined);
+            await humanDelay(800, 1500);
+            const urlInput = await findAny(
+              page,
+              [
+                'input[placeholder*="URL" i]',
+                'input[placeholder*="link" i]',
+                'input[type="url"]',
+              ],
+              3000
+            );
+            if (urlInput) {
+              await urlInput.fill(args.linkUrl).catch(() => undefined);
+              const okBtn = await findAny(
+                page,
+                [
+                  'button:has-text("Concluido")',
+                  'button:has-text("Concluído")',
+                  'button:has-text("Done")',
+                  'button:has-text("OK")',
+                ],
+                3000
+              );
+              if (okBtn) await okBtn.click().catch(() => undefined);
+              await humanDelay(800, 1500);
+            }
+          }
+        }
+      } catch { /* link sticker eh opcional */ }
+    }
+
+    // Botao "Compartilhar com" / "Adicionar a sua story" / "Share to your story"
+    const shareSelectors = [
+      'button:has-text("Compartilhar")',
+      'button:has-text("Share")',
+      'div[role="button"]:has-text("Compartilhar")',
+      'div[role="button"]:has-text("Share")',
+      'button:has-text("Adicionar a sua story")',
+      'button:has-text("Add to your story")',
+    ];
+    const shareBtn = await findAny(page, shareSelectors, 8000);
+    if (!shareBtn) {
+      const dbg = await captureDebug(page, 'story-no-share');
+      return { ok: false, reason: `story_no_share_button ${dbg.screenshot ?? ''}` };
+    }
+    await shareBtn.click({ timeout: 8000 });
+    await humanDelay(2500, 4000);
+
+    // Em alguns fluxos aparece confirmacao "Adicionar a sua story" → click final
+    try {
+      const confirmBtn = await findAny(
+        page,
+        [
+          'button:has-text("Adicionar a sua story")',
+          'button:has-text("Add to your story")',
+          'div[role="button"]:has-text("Adicionar a sua story")',
+          'div[role="button"]:has-text("Add to your story")',
+        ],
+        5000
+      );
+      if (confirmBtn) {
+        await confirmBtn.click({ timeout: 5000 });
+        await humanDelay(2000, 3000);
+      }
+    } catch { /* segue */ }
+
+    // Aguarda redirect/confirmacao
+    try {
+      await page.waitForURL(/\/(?!stories\/create)/, { timeout: 15_000 });
+    } catch {
+      // Sem redirect, mas se sumiu o input file e nao tem erro visivel, considera OK
+      const stillOnCreate = page.url().includes('/stories/create');
+      if (stillOnCreate) {
+        const dbg = await captureDebug(page, 'story-uncertain');
+        return { ok: false, reason: `story_post_uncertain ${dbg.screenshot ?? ''}` };
+      }
+    }
+
+    await appLog({
+      source: 'driver',
+      level: 'info',
+      message: `[real] story postado via web pra ${args.adsPowerId}`,
+    });
+    return { ok: true };
+  } catch (err) {
+    const dbg = await captureDebug(page, 'story-error');
+    return {
+      ok: false,
+      reason: `${err instanceof Error ? err.message : 'unknown'} ${dbg.screenshot ?? ''}`,
+    };
+  }
+}
+
+/**
  * Flow unificado: clicar "+" → upload → Avançar 2x → caption → Compartilhar.
- * Funciona para POST regular (foto/vídeo no feed). IG Web em conta nova não
- * expõe criador de Story, por isso postStory usa esse mesmo flow (= post no feed).
+ * Funciona para POST regular (foto/vídeo no feed).
+ * Usado tambem como fallback quando postStory nao consegue acessar /stories/create/.
  */
 async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
   const page = await getPage(args.adsPowerId);
@@ -368,8 +543,22 @@ export const realDriver: AutomationDriver = {
   },
 
   async postStory(args: PostArgs): Promise<DriverResult> {
-    // IG Web em conta nova não expõe criador de Story; flow único de post no feed
-    return postViaCreateModal(args);
+    // Tenta postar STORY de verdade via /stories/create/.
+    // Se a conta nao tiver permissao (IG bloqueia em contas novas),
+    // faz fallback pro flow de post no feed (postViaCreateModal).
+    const storyResult = await tryPostRealStory(args);
+    if (storyResult.ok) return storyResult;
+    if (storyResult.reason === 'story_not_available') {
+      // Conta sem permissao web pra story → cai pra post no feed
+      await appLog({
+        source: 'driver',
+        level: 'warn',
+        message: `[real] story nao disponivel via web pra essa conta, postando no feed como foto/video`,
+      });
+      return postViaCreateModal(args);
+    }
+    // Erro real (nao "indisponivel"): retorna o erro tal como veio
+    return storyResult;
   },
 
   async postReel(args: PostArgs): Promise<DriverResult> {
