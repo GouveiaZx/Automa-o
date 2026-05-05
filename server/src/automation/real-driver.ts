@@ -72,6 +72,32 @@ async function getPage(adsPowerId: string): Promise<Page> {
 }
 
 /**
+ * Fecha modais informativos que o IG mostra eventualmente (ex: "Agora os posts
+ * de video sao compartilhados como reels"). Sao popups com botao "OK" no centro
+ * da tela que travam o fluxo. Sai sem erro se nao achar nada (no-op).
+ */
+async function dismissInfoModal(page: Page): Promise<void> {
+  // Tenta varios labels comuns. Timeout curto pra nao demorar quando nao tem modal.
+  const okSelectors = [
+    'div[role="dialog"] button:has-text("OK")',
+    'div[role="dialog"] button:has-text("Ok")',
+    'div[role="dialog"] button:has-text("Entendi")',
+    'div[role="dialog"] button:has-text("Got it")',
+    'div[role="dialog"] button:has-text("Continuar")',
+  ];
+  for (const sel of okSelectors) {
+    try {
+      const btn = page.locator(sel).first();
+      if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
+        await btn.click({ timeout: 2000 }).catch(() => undefined);
+        await humanDelay(500, 1000);
+        return;
+      }
+    } catch { /* tenta proximo */ }
+  }
+}
+
+/**
  * Tenta postar como STORY de verdade (24h) via /stories/create/.
  * Retorna:
  *  - { ok: true } se postou
@@ -292,21 +318,40 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     }
     await humanDelay(5000, 8000);
 
+    // Step 2.5: o IG abre modal informativo "Agora os posts de video sao compartilhados como reels"
+    // (so pra videos). Precisa clicar OK pra prosseguir, senao trava na tela "Cortar".
+    await dismissInfoModal(page);
+
     // Step 3: tela "Cortar" → click "Avançar"
     try {
       await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 12000 });
     } catch {
-      const dbg = await captureDebug(page, 'no-advance-1');
-      return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
+      // Tenta de novo apos fechar qualquer modal residual
+      await dismissInfoModal(page);
+      try {
+        await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 6000 });
+      } catch {
+        const dbg = await captureDebug(page, 'no-advance-1');
+        return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
+      }
     }
     await humanDelay(2500, 4000);
+
+    // Step 3.5: pode aparecer outro modal entre as telas (ex: "Compartilhar como Reels"
+    // tem confirmacoes secundarias). Fecha qualquer popup informativo.
+    await dismissInfoModal(page);
 
     // Step 4: tela "Editar" (filtros) → click "Avançar"
     try {
       await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 12000 });
     } catch {
-      const dbg = await captureDebug(page, 'no-advance-2');
-      return { ok: false, reason: `no_advance_after_filters ${dbg.screenshot ?? ''}` };
+      await dismissInfoModal(page);
+      try {
+        await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 6000 });
+      } catch {
+        const dbg = await captureDebug(page, 'no-advance-2');
+        return { ok: false, reason: `no_advance_after_filters ${dbg.screenshot ?? ''}` };
+      }
     }
     await humanDelay(2500, 4000);
 
@@ -576,6 +621,11 @@ export const realDriver: AutomationDriver = {
       // Campos: "Site" (input URL) e "Bio" (textarea)
       let touched = false;
 
+      // IMPORTANTE: o Instagram BLOQUEIA edicao do campo Site via web.
+      // A pagina mostra "Somente eh possivel editar os links no celular".
+      // O input existe mas eh disabled/readonly. Nao adianta tentar digitar.
+      // Aqui detectamos isso e logamos pro operador saber que precisa atualizar
+      // manualmente pelo app mobile.
       if (args.websiteUrl !== undefined && args.websiteUrl !== null) {
         const siteInput = await findAny(
           page,
@@ -588,12 +638,23 @@ export const realDriver: AutomationDriver = {
           5000
         );
         if (siteInput) {
-          await siteInput.click();
-          await page.keyboard.press('Control+A').catch(() => undefined);
-          await page.keyboard.press('Delete').catch(() => undefined);
-          await humanDelay(150, 300);
-          await page.keyboard.type(args.websiteUrl, { delay: 20 });
-          touched = true;
+          const isDisabled = await siteInput.isDisabled().catch(() => false);
+          const isReadonly = await siteInput.evaluate((el) => (el as HTMLInputElement).readOnly).catch(() => false);
+          if (isDisabled || isReadonly) {
+            await appLog({
+              source: 'driver',
+              level: 'warn',
+              message: `[real] campo Site nao editavel via web pra ${args.adsPowerId}. Atualize pelo app mobile do Instagram (Editar perfil -> Site).`,
+            });
+            // nao seta touched=true pelo site, mas segue pro bio (essa parte funciona)
+          } else {
+            await siteInput.click();
+            await page.keyboard.press('Control+A').catch(() => undefined);
+            await page.keyboard.press('Delete').catch(() => undefined);
+            await humanDelay(150, 300);
+            await page.keyboard.type(args.websiteUrl, { delay: 20 });
+            touched = true;
+          }
         }
       }
 
