@@ -56,6 +56,9 @@ export async function startWorker(): Promise<void> {
   // cliente ja tem mais de 1 conta active no banco, eleva pro total automatico
   // pra evitar que jobs fiquem queued indefinidamente sem sinalizar.
   await autoFixActiveAccountsCap();
+  // Auto-elevacao do MAX_CONCURRENT_PROFILES: clientes antigos tem env=3 no .env.
+  // Se nao tem setting no DB, criamos um com 20 pra desbloquear paralelismo.
+  await autoFixMaxConcurrent();
 
   await appLog({
     source: 'worker',
@@ -80,6 +83,32 @@ export async function startWorker(): Promise<void> {
     setTimeout(tick, env.WORKER_POLL_INTERVAL_MS);
   };
   tick();
+}
+
+async function autoFixMaxConcurrent(): Promise<void> {
+  // Se o env.MAX_CONCURRENT_PROFILES eh baixo (<=3, era o default antigo) E o
+  // setting do banco nao existe ou tambem eh baixo, cria/atualiza pra 20.
+  // Cliente que ja ajustou manualmente pra valor especifico nao eh tocado
+  // (so se for menor ou igual a 3).
+  if (env.MAX_CONCURRENT_PROFILES > 3) return; // env ja foi atualizado, OK
+  const setting = await prisma.appSetting.findUnique({
+    where: { key: 'MAX_CONCURRENT_PROFILES' },
+  });
+  if (setting) {
+    const current = parseInt(setting.value, 10);
+    if (Number.isFinite(current) && current > 3) return; // user ja configurou maior
+  }
+  await prisma.appSetting.upsert({
+    where: { key: 'MAX_CONCURRENT_PROFILES' },
+    update: { value: '20' },
+    create: { key: 'MAX_CONCURRENT_PROFILES', value: '20' },
+  });
+  cachedMaxConcurrent = null; // invalida cache
+  await appLog({
+    source: 'worker',
+    level: 'warn',
+    message: `MAX_CONCURRENT_PROFILES estava em ${env.MAX_CONCURRENT_PROFILES} (default antigo). Elevei pra 20 automaticamente. Ajuste em Configuracoes -> Performance se quiser outro valor.`,
+  });
 }
 
 async function autoFixActiveAccountsCap(): Promise<void> {
@@ -116,6 +145,30 @@ async function getActiveAccountCap(): Promise<number | null> {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// Cache em memoria do MAX_CONCURRENT_PROFILES pra nao bater no DB toda iteracao.
+let cachedMaxConcurrent: { value: number; at: number } | null = null;
+const MAX_CONCURRENT_CACHE_MS = 5000;
+
+async function getMaxConcurrent(): Promise<number> {
+  if (cachedMaxConcurrent && Date.now() - cachedMaxConcurrent.at < MAX_CONCURRENT_CACHE_MS) {
+    return cachedMaxConcurrent.value;
+  }
+  let value = env.MAX_CONCURRENT_PROFILES;
+  try {
+    const setting = await prisma.appSetting.findUnique({
+      where: { key: 'MAX_CONCURRENT_PROFILES' },
+    });
+    if (setting) {
+      const n = parseInt(setting.value, 10);
+      if (Number.isFinite(n) && n > 0) value = n;
+    }
+  } catch {
+    /* DB indisponivel — cai pro env */
+  }
+  cachedMaxConcurrent = { value, at: Date.now() };
+  return value;
+}
+
 async function getAllowedAccountIds(cap: number): Promise<Set<string>> {
   const accounts = await prisma.instagramAccount.findMany({
     where: { status: 'active' },
@@ -150,7 +203,8 @@ async function processOnce(): Promise<void> {
     data: { status: 'queued' },
   });
 
-  const slots = env.MAX_CONCURRENT_PROFILES - inFlight.size;
+  const maxConcurrent = await getMaxConcurrent();
+  const slots = maxConcurrent - inFlight.size;
   if (slots <= 0) return;
 
   // Etapa 4: limitar contas ativas conforme MAX_ACTIVE_ACCOUNTS
@@ -179,7 +233,7 @@ async function processOnce(): Promise<void> {
   let claimed = 0;
 
   for (const job of candidates) {
-    if (inFlight.size >= env.MAX_CONCURRENT_PROFILES) break;
+    if (inFlight.size >= maxConcurrent) break;
     if (accountInFlight.has(job.accountId)) {
       skippedByAccountInFlight++;
       continue;

@@ -8,6 +8,7 @@ import { env } from '../../env.js';
 // criar novas configuracoes runtime.
 const ALLOWED_SETTING_KEYS = new Set([
   'MAX_ACTIVE_ACCOUNTS',
+  'MAX_CONCURRENT_PROFILES',
 ]);
 
 export async function settingsRoutes(app: FastifyInstance) {

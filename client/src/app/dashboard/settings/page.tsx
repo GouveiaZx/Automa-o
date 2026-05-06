@@ -22,6 +22,7 @@ interface SettingsResponse {
 export default function SettingsPage() {
   const [data, setData] = useState<SettingsResponse | null>(null);
   const [maxActive, setMaxActive] = useState('');
+  const [maxConcurrent, setMaxConcurrent] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -30,6 +31,9 @@ export default function SettingsPage() {
     setData(r);
     const cur = r.stored.find((s) => s.key === 'MAX_ACTIVE_ACCOUNTS');
     if (cur) setMaxActive(cur.value);
+    const concurrent = r.stored.find((s) => s.key === 'MAX_CONCURRENT_PROFILES');
+    if (concurrent) setMaxConcurrent(concurrent.value);
+    else setMaxConcurrent(String(r.runtime.MAX_CONCURRENT_PROFILES));
   }
 
   useEffect(() => {
@@ -50,6 +54,20 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveMaxConcurrent() {
+    setSaving(true);
+    try {
+      await api('/api/settings/MAX_CONCURRENT_PROFILES', {
+        method: 'PUT',
+        body: { value: maxConcurrent },
+      });
+      setSavedAt(Date.now());
+      load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <header>
@@ -58,6 +76,41 @@ export default function SettingsPage() {
           Limites operacionais. Validação progressiva conforme spec (1 → 3 → 7 → 10 → 20).
         </p>
       </header>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Performance</CardTitle>
+          <CardDescription>
+            Quantos perfis AdsPower o worker abre em paralelo. Mais = mais velocidade,
+            mas consome mais RAM (~300-500MB cada perfil aberto). Aumente se seu PC aguenta.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1">
+            <Label>MAX_CONCURRENT_PROFILES</Label>
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                value={maxConcurrent}
+                onChange={(e) => setMaxConcurrent(e.target.value)}
+                className="max-w-32"
+              />
+              <Button onClick={saveMaxConcurrent} disabled={saving}>
+                {saving ? 'Salvando...' : 'Salvar'}
+              </Button>
+              {savedAt && Date.now() - savedAt < 3000 && (
+                <span className="self-center text-xs text-emerald-500">salvo ✓</span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Worker reflete a mudança no próximo ciclo (~5s). Valor salvo no banco
+              tem precedência sobre o .env.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

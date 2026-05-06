@@ -9,7 +9,7 @@ const schema = z.object({
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
   ADMIN_EMAIL: z.string().min(3).default('admin@local'),
   ADMIN_BOOTSTRAP_PASSWORD: z.string().min(6).default('admin123'),
-  MAX_CONCURRENT_PROFILES: z.coerce.number().int().positive().default(3),
+  MAX_CONCURRENT_PROFILES: z.coerce.number().int().positive().default(20),
   WORKER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   MAX_JOB_ATTEMPTS: z.coerce.number().int().positive().default(2),
   AUTOMATION_MOCK_FAIL_RATE: z.coerce.number().min(0).max(1).default(0.1),
