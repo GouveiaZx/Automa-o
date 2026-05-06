@@ -13,14 +13,16 @@ import type { Campaign, MediaItem } from '@automacao/shared';
 import { formatDateTime } from '@/lib/utils';
 import { Trash2, Upload } from 'lucide-react';
 
+const MAX_FILES_PER_BATCH = 10;
+
 export default function MediaPage() {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [type, setType] = useState<'story' | 'reel'>('reel');
   const [campaignId, setCampaignId] = useState('');
   const [caption, setCaption] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
@@ -39,24 +41,43 @@ export default function MediaPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || !campaignId) return;
+    if (files.length === 0 || !campaignId) return;
+    if (files.length > MAX_FILES_PER_BATCH) {
+      setError(`Maximo ${MAX_FILES_PER_BATCH} arquivos por vez (voce selecionou ${files.length})`);
+      return;
+    }
     setBusy(true);
     setError(null);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('type', type);
-      fd.append('campaignId', campaignId);
-      if (caption) fd.append('caption', caption);
-      await api('/api/media', { method: 'POST', formData: fd });
-      setFile(null);
-      setCaption('');
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'erro');
-    } finally {
-      setBusy(false);
+    setProgress({ done: 0, total: files.length });
+
+    const failures: { name: string; err: string }[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('type', 'reel'); // Story removido do UI; sistema posta tudo no feed
+        fd.append('campaignId', campaignId);
+        if (caption) fd.append('caption', caption);
+        await api('/api/media', { method: 'POST', formData: fd });
+      } catch (err) {
+        failures.push({ name: file.name, err: err instanceof Error ? err.message : 'erro' });
+      }
+      setProgress({ done: i + 1, total: files.length });
     }
+
+    if (failures.length > 0) {
+      setError(
+        `${files.length - failures.length} de ${files.length} enviados. Falhas:\n` +
+          failures.map((f) => `  - ${f.name}: ${f.err}`).join('\n')
+      );
+    } else {
+      setFiles([]);
+      setCaption('');
+    }
+    setBusy(false);
+    setProgress(null);
+    load();
   }
 
   async function remove(id: string) {
@@ -81,18 +102,7 @@ export default function MediaPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <Label>Tipo</Label>
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-                value={type}
-                onChange={(e) => setType(e.target.value as 'story' | 'reel')}
-              >
-                <option value="story">Story</option>
-                <option value="reel">Reel</option>
-              </select>
-            </div>
+          <form onSubmit={submit} className="grid grid-cols-1 gap-4">
             <div className="space-y-1">
               <Label>Campanha</Label>
               <select
@@ -108,23 +118,34 @@ export default function MediaPage() {
                 ))}
               </select>
             </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label>{type === 'story' ? 'Texto/legenda do Story' : 'Caption do Reel'}</Label>
+            <div className="space-y-1">
+              <Label>Caption (mesma para todas as midias selecionadas)</Label>
               <Textarea value={caption} onChange={(e) => setCaption(e.target.value)} rows={2} />
             </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label>Arquivo</Label>
+            <div className="space-y-1">
+              <Label>Arquivos (selecione ate {MAX_FILES_PER_BATCH} videos de uma vez)</Label>
               <Input
                 type="file"
-                accept=".mp4,.mov,.jpg,.jpeg,.png"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                accept=".mp4,.mov,.webm,.m4v"
+                multiple
+                onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
                 required
               />
+              {files.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {files.length} arquivo{files.length > 1 ? 's' : ''} selecionado{files.length > 1 ? 's' : ''}
+                </p>
+              )}
             </div>
-            {error && <p className="text-destructive text-sm md:col-span-2">{error}</p>}
-            <div className="md:col-span-2 flex justify-end">
-              <Button type="submit" disabled={busy || !file}>
-                {busy ? 'Enviando...' : 'Enviar'}
+            {progress && (
+              <p className="text-sm text-muted-foreground">
+                Enviando {progress.done} de {progress.total}...
+              </p>
+            )}
+            {error && <p className="text-destructive text-sm whitespace-pre-line">{error}</p>}
+            <div className="flex justify-end">
+              <Button type="submit" disabled={busy || files.length === 0}>
+                {busy ? 'Enviando...' : `Enviar ${files.length > 0 ? `(${files.length})` : ''}`}
               </Button>
             </div>
           </form>

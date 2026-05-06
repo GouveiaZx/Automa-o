@@ -543,29 +543,85 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       return { ok: false, reason: `share_button_not_clicked ${dbg.screenshot ?? ''}` };
     }
 
-    // Step 7: aguarda confirmação de sucesso. Critérios (qualquer um basta):
-    //  a) Toast com "compartilhado"/"shared"/"publicado"/"posted" como FRASE específica
-    //  b) Modal "Criar novo post" desaparece (sucesso UI fechou)
-    //  c) Modal mostra "Sua publicação foi compartilhada" / "Your post has been shared"
+    // Step 7: aguarda confirmação de sucesso REAL (upload terminou no servidor IG).
+    //
+    // Bug antigo: confiava em "Criar novo post" sumir, mas IG mostra tela "Sharing"
+    // com spinner DEPOIS do dialog sumir — sistema fechava antes do upload terminar.
+    //
+    // Agora: aguarda TODAS as condicoes simultaneas:
+    //   - Dialog "Criar novo post" nao esta visivel
+    //   - Texto "Sharing"/"Compartilhando"/"Enviando" nao esta visivel
+    //   - Sem spinner/progressbar ativo dentro de qualquer dialog
+    //
+    // Timeout: 90s pra video (reel pode demorar pra processar+upload),
+    // 30s pra foto. Em caso de timeout, checa URL: se mudou pra /reels/, /p/,
+    // ou perfil → considera OK (IG redirecionou apos sucesso).
+    const finalTimeout = isVideo ? 90_000 : 30_000;
     let confirmed = false;
     try {
-      await Promise.race([
-        page.getByText(/Sua publica[çc][ãa]o foi compartilhada|Your post has been shared|Publica[çc][ãa]o compartilhada|Post shared/i, { exact: false }).first().waitFor({ timeout: 25_000 }),
-        page.waitForFunction(
-          () => !document.querySelector('div[role="dialog"] [aria-label="Criar novo post"], div[role="dialog"] header:has-text("Criar novo post")'),
-          undefined,
-          { timeout: 25_000 }
-        ),
-      ]);
+      await page.waitForFunction(
+        () => {
+          // 1. Dialog "Criar novo post" ainda aberto?
+          const stillOnCreate = document.querySelector(
+            'div[role="dialog"] [aria-label="Criar novo post"]'
+          );
+          if (stillOnCreate) return false;
+          // Tambem checa header com texto
+          const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+          for (const d of dialogs) {
+            const headers = d.querySelectorAll('header, h1, h2');
+            for (const h of headers) {
+              if (/Criar novo post|Create new post/i.test(h.textContent?.trim() || '')) {
+                return false;
+              }
+            }
+          }
+          // 2. Tela "Sharing"/"Compartilhando"/"Enviando" visivel?
+          const sharingTexts = ['Sharing', 'Compartilhando', 'Enviando', 'Publicando', 'Posting'];
+          const allTextEls = Array.from(document.querySelectorAll('div, span, header'));
+          for (const t of sharingTexts) {
+            if (allTextEls.some((el) => {
+              const txt = el.textContent?.trim() || '';
+              return txt === t && (el as HTMLElement).offsetParent !== null;
+            })) {
+              return false;
+            }
+          }
+          // 3. Spinner ativo dentro de dialog?
+          const spinners = document.querySelectorAll(
+            'div[role="dialog"] [role="progressbar"], div[role="dialog"] svg[aria-label*="Carregando" i], div[role="dialog"] svg[aria-label*="Loading" i]'
+          );
+          for (const s of spinners) {
+            const r = (s as HTMLElement).getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return false;
+          }
+          return true;
+        },
+        undefined,
+        { timeout: finalTimeout, polling: 1000 }
+      );
       confirmed = true;
     } catch {
-      // último critério: dialog Criar novo post sumiu = post fechou
-      const stillOpen = await page
-        .locator('div[role="dialog"]:has-text("Criar novo post")')
-        .first()
-        .isVisible({ timeout: 1500 })
-        .catch(() => false);
-      confirmed = !stillOpen;
+      // Timeout — confere se URL mudou (IG redireciona apos publicar com sucesso)
+      const url = page.url();
+      const successUrl = /\/(reels?|p\/|stories\/highlights|[^/]+\/?$)/.test(url) && !url.includes('/create');
+      if (successUrl) {
+        confirmed = true;
+      } else {
+        // Ultima checagem: dialog "Criar novo post" ainda visivel?
+        const stillOpen = await page
+          .locator('div[role="dialog"]:has-text("Criar novo post"), div[role="dialog"]:has-text("Create new post")')
+          .first()
+          .isVisible({ timeout: 1500 })
+          .catch(() => false);
+        // Tambem checa se ainda tem "Sharing" visivel
+        const stillSharing = await page
+          .getByText(/^(Sharing|Compartilhando|Enviando|Publicando|Posting)$/)
+          .first()
+          .isVisible({ timeout: 1500 })
+          .catch(() => false);
+        confirmed = !stillOpen && !stillSharing;
+      }
     }
 
     if (!confirmed) {
