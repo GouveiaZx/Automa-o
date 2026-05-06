@@ -112,20 +112,41 @@ const IPHONE_UA =
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
-async function applyMobileSpoof(page: Page): Promise<void> {
+async function applyMobileSpoof(page: Page): Promise<{ ok: boolean; failures: string[] }> {
+  const failures: string[] = [];
   // Layer 1: HTTP headers
-  await page.context().setExtraHTTPHeaders({ 'User-Agent': IPHONE_UA }).catch(() => undefined);
+  try {
+    await page.context().setExtraHTTPHeaders({ 'User-Agent': IPHONE_UA });
+  } catch (e) {
+    failures.push(`http_headers: ${e instanceof Error ? e.message : 'unknown'}`);
+  }
   // Layer 2: JS navigator (initScript aplica em todas as paginas futuras do contexto)
-  await page.context().addInitScript(() => {
-    try {
-      Object.defineProperty(navigator, 'userAgent', { get: () => 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', configurable: true });
-      Object.defineProperty(navigator, 'platform', { get: () => 'iPhone', configurable: true });
-      Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5, configurable: true });
-      Object.defineProperty(navigator, 'vendor', { get: () => 'Apple Computer, Inc.', configurable: true });
-    } catch { /* ignore */ }
-  }).catch(() => undefined);
+  try {
+    await page.context().addInitScript(() => {
+      try {
+        Object.defineProperty(navigator, 'userAgent', { get: () => 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', configurable: true });
+        Object.defineProperty(navigator, 'platform', { get: () => 'iPhone', configurable: true });
+        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5, configurable: true });
+        Object.defineProperty(navigator, 'vendor', { get: () => 'Apple Computer, Inc.', configurable: true });
+      } catch { /* ignore */ }
+    });
+  } catch (e) {
+    failures.push(`init_script: ${e instanceof Error ? e.message : 'unknown'}`);
+  }
   // Layer 3: viewport mobile
-  await page.setViewportSize({ width: 390, height: 844 }).catch(() => undefined);
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+  } catch (e) {
+    failures.push(`viewport: ${e instanceof Error ? e.message : 'unknown'}`);
+  }
+  if (failures.length > 0) {
+    await appLog({
+      source: 'driver',
+      level: 'warn',
+      message: `[real] mobile spoof aplicado parcialmente: ${failures.join(' | ')}`,
+    });
+  }
+  return { ok: failures.length === 0, failures };
 }
 
 async function revertMobileSpoof(page: Page): Promise<void> {
@@ -144,9 +165,12 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
     await page.goto('https://www.instagram.com/stories/create/', { waitUntil: 'domcontentloaded' });
     await humanDelay(2500, 4000);
 
-    // Detectar se IG redirecionou (story create indisponivel)
+    // Detectar se IG redirecionou pra fora do criador de story.
+    // IG mobile pode redirecionar pra: /stories/create, /create/story, /sh/..., /create/...
+    // Se ficou em qualquer URL com "create" ou "story", consideramos OK.
     const finalUrl = page.url();
-    if (!finalUrl.includes('/stories/create')) {
+    const onCreator = /\/(stories?\/create|create\/story|sh\/|create\/)/.test(finalUrl);
+    if (!onCreator) {
       // Reverter spoof antes de retornar pro fallback do feed
       await revertMobileSpoof(page);
       return { ok: false, reason: 'story_not_available' };
@@ -245,14 +269,30 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
       } catch { /* link sticker eh opcional */ }
     }
 
-    // Botao "Compartilhar com" / "Adicionar a sua story" / "Share to your story"
+    // Botao pra postar story. Inclui selectors desktop E mobile UI:
+    //   Desktop: "Compartilhar" / "Share"
+    //   Mobile:  "Sua story" / "Adicionar a sua story" / "Add to your story" / "Publicar" / "Post"
     const shareSelectors = [
+      // Mobile UI - prioridade alta (texto especifico de story)
+      'button:has-text("Sua story")',
+      'button:has-text("Your story")',
+      'button:has-text("Adicionar a sua story")',
+      'button:has-text("Adicionar à sua story")',
+      'button:has-text("Add to your story")',
+      'div[role="button"]:has-text("Sua story")',
+      'div[role="button"]:has-text("Your story")',
+      'div[role="button"]:has-text("Adicionar a sua story")',
+      'div[role="button"]:has-text("Adicionar à sua story")',
+      'div[role="button"]:has-text("Add to your story")',
+      // Desktop UI - generico
       'button:has-text("Compartilhar")',
       'button:has-text("Share")',
+      'button:has-text("Publicar")',
+      'button:has-text("Post")',
       'div[role="button"]:has-text("Compartilhar")',
       'div[role="button"]:has-text("Share")',
-      'button:has-text("Adicionar a sua story")',
-      'button:has-text("Add to your story")',
+      'div[role="button"]:has-text("Publicar")',
+      'div[role="button"]:has-text("Post")',
     ];
     const shareBtn = await findAny(page, shareSelectors, 8000);
     if (!shareBtn) {
