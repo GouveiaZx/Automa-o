@@ -83,6 +83,54 @@ export default function MediaPage() {
   async function remove(id: string) {
     if (!confirm('Excluir mídia?')) return;
     await api(`/api/media/${id}`, { method: 'DELETE' });
+    setSelected((s) => {
+      const n = new Set(s);
+      n.delete(id);
+      return n;
+    });
+    load();
+  }
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  function toggleAll() {
+    if (selected.size === items.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(items.map((m) => m.id)));
+    }
+  }
+
+  function toggleOne(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
+  async function bulkDelete() {
+    if (selected.size === 0) return;
+    if (!confirm(`Excluir ${selected.size} mídia${selected.size > 1 ? 's' : ''} selecionada${selected.size > 1 ? 's' : ''}?`)) return;
+    setBulkBusy(true);
+    const ids = Array.from(selected);
+    let okCount = 0;
+    const failures: string[] = [];
+    for (const id of ids) {
+      try {
+        await api(`/api/media/${id}`, { method: 'DELETE' });
+        okCount++;
+      } catch (err) {
+        failures.push(`${id}: ${err instanceof Error ? err.message : 'erro'}`);
+      }
+    }
+    setSelected(new Set());
+    setBulkBusy(false);
+    if (failures.length > 0) {
+      alert(`${okCount} de ${ids.length} excluídas. Falhas:\n${failures.join('\n')}`);
+    }
     load();
   }
 
@@ -154,12 +202,35 @@ export default function MediaPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Acervo</CardTitle>
+          <CardTitle className="flex items-center justify-between">
+            <span>Acervo</span>
+            {selected.size > 0 && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={bulkDelete}
+                disabled={bulkBusy}
+              >
+                {bulkBusy ? 'Excluindo...' : `Excluir ${selected.size} selecionada${selected.size > 1 ? 's' : ''}`}
+              </Button>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && selected.size === items.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selected.size > 0 && selected.size < items.length;
+                    }}
+                    onChange={toggleAll}
+                    aria-label="Selecionar todas"
+                  />
+                </TableHead>
                 <TableHead>Tipo</TableHead>
                 <TableHead>Arquivo</TableHead>
                 <TableHead>Caption</TableHead>
@@ -170,7 +241,15 @@ export default function MediaPage() {
             </TableHeader>
             <TableBody>
               {items.map((m) => (
-                <TableRow key={m.id}>
+                <TableRow key={m.id} data-state={selected.has(m.id) ? 'selected' : undefined}>
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(m.id)}
+                      onChange={() => toggleOne(m.id)}
+                      aria-label={`Selecionar ${m.filePath}`}
+                    />
+                  </TableCell>
                   <TableCell>
                     <Badge variant={m.type === 'reel' ? 'default' : 'secondary'}>{m.type}</Badge>
                   </TableCell>
@@ -198,7 +277,7 @@ export default function MediaPage() {
               ))}
               {!items.length && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
                     Nenhuma mídia cadastrada.
                   </TableCell>
                 </TableRow>

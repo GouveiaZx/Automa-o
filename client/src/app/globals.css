@@ -50,4 +50,16 @@
     @apply bg-background text-foreground;
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
+  /* Selects HTML nativos: o dropdown de <option> eh renderizado pelo SO/navegador
+     e nao respeita CSS Tailwind. No tema escuro com OS em tema claro, o texto
+     virava branco em fundo branco. Forca preto/branco explicito. */
+  select option {
+    background-color: hsl(240 10% 3.9%);
+    color: hsl(0 0% 98%);
+  }
+  /* Quando user esta em tema light do app, mantem opcoes legiveis */
+  :root:not(.dark) select option {
+    background-color: hsl(0 0% 100%);
+    color: hsl(240 10% 3.9%);
+  }
 }

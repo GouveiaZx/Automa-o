@@ -77,20 +77,32 @@ async function getPage(adsPowerId: string): Promise<Page> {
  * da tela que travam o fluxo. Sai sem erro se nao achar nada (no-op).
  */
 async function dismissInfoModal(page: Page): Promise<void> {
-  // Tenta varios labels comuns. Timeout curto pra nao demorar quando nao tem modal.
-  const okSelectors = [
-    'div[role="dialog"] button:has-text("OK")',
-    'div[role="dialog"] button:has-text("Ok")',
-    'div[role="dialog"] button:has-text("Entendi")',
-    'div[role="dialog"] button:has-text("Got it")',
-    'div[role="dialog"] button:has-text("Continuar")',
+  // Tenta varios labels comuns em ambos: <button> e <div role=button>.
+  // IG moderno usa role=button em divs. Timeout curto pra nao demorar quando nao tem modal.
+  const labels = [
+    'OK', 'Ok',
+    'Entendi', 'Got it',
+    'Continuar', 'Continue',
+    'Compartilhar', 'Share',
+    'Permitir', 'Allow',
+    'Sim', 'Yes',
+    'Concluir', 'Done', 'Concluído', 'Concluido',
+    'Avançar', 'Next',
   ];
+  // Gera selectors pra cada label em ambos formatos
+  const okSelectors: string[] = [];
+  for (const label of labels) {
+    okSelectors.push(`div[role="dialog"] button:has-text("${label}")`);
+    okSelectors.push(`div[role="dialog"] div[role="button"]:has-text("${label}")`);
+  }
   for (const sel of okSelectors) {
     try {
       const btn = page.locator(sel).first();
-      if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
+      if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
         await btn.click({ timeout: 2000 }).catch(() => undefined);
         await humanDelay(500, 1000);
+        // Tenta DE NOVO recursivamente caso aparece outro modal em sequencia
+        await dismissInfoModal(page);
         return;
       }
     } catch { /* tenta proximo */ }
@@ -542,6 +554,16 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       const dbg = await captureDebug(page, 'no-share-btn');
       return { ok: false, reason: `share_button_not_clicked ${dbg.screenshot ?? ''}` };
     }
+
+    // Step 6.5: APOS clicar Compartilhar o IG pode mostrar popup informativo
+    // (ex: "Agora posts de video sao compartilhados como reels", confirmacao
+    // de privacidade, etc). Sem fechar esse popup, o sistema fica preso 90s
+    // ate timeout. Chamamos dismissInfoModal varias vezes pra cobrir popups
+    // que aparecem em sequencia.
+    await humanDelay(2000, 3500);
+    await dismissInfoModal(page);
+    await humanDelay(1500, 2500);
+    await dismissInfoModal(page);
 
     // Step 7: aguarda confirmação de sucesso REAL (upload terminou no servidor IG).
     //
