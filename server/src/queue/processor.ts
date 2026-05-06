@@ -86,7 +86,11 @@ export async function processJob(jobId: string): Promise<void> {
             caption: job.media.caption,
           });
 
-    if (!env.KEEP_PROFILES_OPEN) {
+    // Story usa mobile UA spoof via initScript que CONTAMINA o contexto.
+    // Forca closeProfile depois de story mesmo com KEEP_PROFILES_OPEN=true,
+    // pra proximo job (feed/reel) abrir contexto fresh sem o spoof grudado.
+    const storyContaminatedContext = job.type === 'story';
+    if (!env.KEEP_PROFILES_OPEN || storyContaminatedContext) {
       await driver.closeProfile(adsId).catch(() => undefined);
     }
 

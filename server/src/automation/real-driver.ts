@@ -360,11 +360,22 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     const isVideo = /\.(mp4|mov|webm|m4v|avi)$/i.test(args.filePath);
 
     if (isVideo) {
-      // Pra video: espera o botao Avancar ficar ENABLED (IG bloqueia enquanto processa)
-      // Timeout 90s pra video grande. Se nao habilitar, fallback de delay extra.
+      // Pra video: SEMPRE da delay minimo de 8s (video precisa processar mesmo)
+      // + waitForFunction esperando IG sair de estado de "processando" como guardrail.
+      // O delay minimo evita falso positivo se o botao Avancar ja estava enabled.
+      await humanDelay(8000, 12000);
       try {
+        // Espera ate 60s a mais por: spinner de processamento sumir OU
+        // botao Avancar ficar enabled (qualquer um indica IG terminou de processar).
         await page.waitForFunction(
           () => {
+            // Se tem spinner/loading visivel, ainda processando
+            const spinners = document.querySelectorAll('[role="progressbar"], svg[aria-label*="Carregando" i], svg[aria-label*="Loading" i]');
+            for (const s of spinners) {
+              const rect = (s as HTMLElement).getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) return false; // ainda processando
+            }
+            // Sem spinner: confere se Avancar ta enabled
             const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
             const advanceBtn = btns.find((b) => /^(Avançar|Next)$/i.test(b.textContent?.trim() || ''));
             if (!advanceBtn) return false;
@@ -372,11 +383,11 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             return !disabled;
           },
           undefined,
-          { timeout: 90_000, polling: 1000 }
+          { timeout: 60_000, polling: 1000 }
         );
       } catch {
-        // Botao nao habilitou — talvez fingerprint diferente. Da delay extra antes de tentar
-        await humanDelay(15000, 25000);
+        // Nao detectou conclusao — da delay extra defensivo
+        await humanDelay(10000, 15000);
       }
     } else {
       await humanDelay(5000, 8000);
