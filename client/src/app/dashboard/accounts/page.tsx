@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { AdsPowerProfile, Campaign, InstagramAccount } from '@automacao/shared';
-import { Trash2, Plus, Play, Pause, RefreshCw, Loader2 } from 'lucide-react';
+import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2 } from 'lucide-react';
 import { connectSse } from '@/lib/sse';
 
 const STATUS_VARIANT: Record<string, 'success' | 'warning' | 'destructive' | 'secondary'> = {
@@ -27,6 +27,9 @@ export default function AccountsPage() {
   const [form, setForm] = useState({ username: '', displayName: '', bio: '', campaignId: '', adsPowerProfileId: '' });
   const [error, setError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [validatingId, setValidatingId] = useState<string | null>(null);
+  const [bulkValidating, setBulkValidating] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   async function load() {
     const [a, c, p] = await Promise.all([
@@ -77,6 +80,70 @@ export default function AccountsPage() {
     if (!confirm('Excluir conta?')) return;
     await api(`/api/accounts/${id}`, { method: 'DELETE' });
     load();
+  }
+
+  async function validateAccount(account: InstagramAccount): Promise<{ ok: boolean; reason?: string }> {
+    if (!account.adsPowerProfile) {
+      return { ok: false, reason: 'sem perfil AdsPower' };
+    }
+    try {
+      const r = await api<{ ok: boolean; logged: boolean; reason?: string }>(
+        `/api/diagnostics/test-profile/${account.adsPowerProfile.id}`,
+        { method: 'POST' }
+      );
+      return { ok: r.logged === true, reason: r.reason };
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : 'erro' };
+    }
+  }
+
+  async function validateOne(account: InstagramAccount) {
+    if (!confirm(`Abrir AdsPower de @${account.username} e validar login no Instagram?\n\nDemora 30-60s.`)) return;
+    setValidatingId(account.id);
+    const r = await validateAccount(account);
+    setValidatingId(null);
+    if (r.ok) {
+      alert(`✓ @${account.username} esta logado no IG`);
+    } else {
+      alert(`✗ @${account.username}: ${r.reason ?? 'falha desconhecida'}`);
+    }
+    load();
+  }
+
+  async function bulkValidate() {
+    const selectedAccounts = items.filter((a) => selected.has(a.id));
+    if (selectedAccounts.length === 0) return;
+    if (!confirm(`Validar ${selectedAccounts.length} contas? Demora ~30-60s POR conta (sequencial).`)) return;
+    setBulkValidating(true);
+    const results: { username: string; ok: boolean; reason?: string }[] = [];
+    for (const acc of selectedAccounts) {
+      const r = await validateAccount(acc);
+      results.push({ username: acc.username, ok: r.ok, reason: r.reason });
+    }
+    setBulkValidating(false);
+    setSelected(new Set());
+    const okCount = results.filter((r) => r.ok).length;
+    const failed = results.filter((r) => !r.ok);
+    let msg = `${okCount} de ${results.length} contas OK`;
+    if (failed.length > 0) {
+      msg += `\n\nFalhas:\n` + failed.map((f) => `  ✗ @${f.username}: ${f.reason ?? 'erro'}`).join('\n');
+    }
+    alert(msg);
+    load();
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
+  function toggleAll() {
+    if (selected.size === items.length) setSelected(new Set());
+    else setSelected(new Set(items.map((a) => a.id)));
   }
 
   async function syncBio(id: string, username: string) {
@@ -179,12 +246,39 @@ export default function AccountsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Existentes</CardTitle>
+          <CardTitle className="flex items-center justify-between gap-2 flex-wrap">
+            <span>Existentes</span>
+            {selected.size > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={bulkValidate}
+                disabled={bulkValidating}
+              >
+                {bulkValidating ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Validando {selected.size}...</>
+                ) : (
+                  <><CheckCircle2 className="h-4 w-4 mr-2" /> Validar {selected.size} selecionada{selected.size > 1 ? 's' : ''}</>
+                )}
+              </Button>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && selected.size === items.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selected.size > 0 && selected.size < items.length;
+                    }}
+                    onChange={toggleAll}
+                    aria-label="Selecionar todas"
+                  />
+                </TableHead>
                 <TableHead>Conta</TableHead>
                 <TableHead>Campanha</TableHead>
                 <TableHead>Perfil AdsPower</TableHead>
@@ -195,7 +289,15 @@ export default function AccountsPage() {
             </TableHeader>
             <TableBody>
               {items.map((a) => (
-                <TableRow key={a.id}>
+                <TableRow key={a.id} data-state={selected.has(a.id) ? 'selected' : undefined}>
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(a.id)}
+                      onChange={() => toggleSelect(a.id)}
+                      aria-label={`Selecionar @${a.username}`}
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="font-medium">@{a.username}</div>
                     {a.displayName && (
@@ -214,6 +316,19 @@ export default function AccountsPage() {
                   </TableCell>
                   <TableCell>{a.consecutiveFails}</TableCell>
                   <TableCell className="flex gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      title="Validar login no IG (abre AdsPower)"
+                      disabled={validatingId === a.id || !a.adsPowerProfileId}
+                      onClick={() => validateOne(a)}
+                    >
+                      {validatingId === a.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4" />
+                      )}
+                    </Button>
                     <Button
                       size="icon"
                       variant="ghost"
@@ -244,7 +359,7 @@ export default function AccountsPage() {
               ))}
               {!items.length && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
                     Nenhuma conta cadastrada.
                   </TableCell>
                 </TableRow>
