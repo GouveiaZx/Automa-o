@@ -32,7 +32,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/5] Atualizando dependencias...
+echo [3/6] Atualizando dependencias...
 call npm install
 if errorlevel 1 (
     echo [ERRO] npm install falhou.
@@ -41,14 +41,27 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/5] Aplicando migrations do banco (se houver)...
+echo [4/6] Regenerando Prisma Client (essencial apos schema novo)...
+pushd server
+call npx prisma generate
+if errorlevel 1 (
+    echo [ERRO] prisma generate falhou.
+    echo Feche TODAS as janelas pretas (server, worker, client) e rode update.bat de novo.
+    popd
+    pause
+    exit /b 1
+)
+popd
+
+echo.
+echo [5/6] Aplicando migrations do banco (se houver)...
 call npm run db:migrate
 if errorlevel 1 (
     echo [AVISO] db:migrate retornou erro.
 )
 
 echo.
-echo [5/5] Verificando build...
+echo [6/6] Verificando build...
 call npm run typecheck --workspaces --if-present
 if errorlevel 1 (
     echo [AVISO] typecheck retornou erro. Pode haver problemas.

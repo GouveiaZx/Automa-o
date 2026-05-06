@@ -97,23 +97,28 @@ function nextSlots(
       .map((t) => t.trim())
       .filter((t) => /^\d{2}:\d{2}$/.test(t));
     if (times.length > 0) {
-      // Comeca pegando o proximo horario apos lastScheduled
+      // Distribui count nos horarios fixos. Se count > times.length,
+      // gera N posts por horario (offset de 1 min entre eles).
+      // Ex: count=30, times=5 → 6 posts por slot (00:00, 00:01, ... 00:05)
+      const postsPerSlot = Math.max(1, Math.ceil(count / times.length));
+      const sortedTimes = [...times].sort();
       let cursor = new Date(lastScheduled);
+      cursor.setHours(0, 0, 0, 0);
+
       while (slots.length < count) {
-        // Gera horarios fixos pra "cursor" (dia atual)
-        const candidates = times.map((t) => timeOnDate(t, cursor));
-        // Filtra os que sao APOS lastScheduled
-        const future = candidates.filter((d) => d > lastScheduled);
-        future.sort((a, b) => a.getTime() - b.getTime());
-        for (const c of future) {
+        for (const t of sortedTimes) {
+          const base = timeOnDate(t, cursor);
+          for (let i = 0; i < postsPerSlot; i++) {
+            if (slots.length >= count) break;
+            const slot = new Date(base.getTime() + i * 60 * 1000);
+            if (slot > lastScheduled) {
+              slots.push(slot);
+            }
+          }
           if (slots.length >= count) break;
-          slots.push(c);
-          lastScheduled = c;
         }
-        // Se ainda falta, vai pro dia seguinte
         cursor = new Date(cursor);
         cursor.setDate(cursor.getDate() + 1);
-        cursor.setHours(0, 0, 0, 0);
       }
       return slots;
     }
