@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api, apiBaseUrl } from '@/lib/api';
-import type { Campaign, MediaItem } from '@automacao/shared';
+import type { Campaign, InstagramAccount, MediaItem } from '@automacao/shared';
 import { formatDateTime } from '@/lib/utils';
 import { Trash2, Upload } from 'lucide-react';
 
@@ -18,7 +18,9 @@ const MAX_FILES_PER_BATCH = 10;
 export default function MediaPage() {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [campaignId, setCampaignId] = useState('');
+  const [accounts, setAccounts] = useState<InstagramAccount[]>([]);
+  const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
+  const [filterCampaignId, setFilterCampaignId] = useState<string>('');
   const [caption, setCaption] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
@@ -26,54 +28,75 @@ export default function MediaPage() {
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const [m, c] = await Promise.all([
+    const [m, c, a] = await Promise.all([
       api<MediaItem[]>('/api/media'),
       api<Campaign[]>('/api/campaigns'),
+      api<InstagramAccount[]>('/api/accounts'),
     ]);
     setItems(m);
     setCampaigns(c);
-    if (!campaignId && c.length > 0) setCampaignId(c[0].id);
+    setAccounts(a);
   }
 
   useEffect(() => {
     load();
   }, []);
 
+  // Deriva campanhas unicas a partir das contas selecionadas (deduplica
+  // se 2 contas usam mesma campanha — sobe so 1 vez nessa campanha).
+  function uniqueCampaignIdsFromSelection(): string[] {
+    const set = new Set<string>();
+    for (const accId of selectedAccounts) {
+      const acc = accounts.find((a) => a.id === accId);
+      if (acc?.campaignId) set.add(acc.campaignId);
+    }
+    return Array.from(set);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (files.length === 0 || !campaignId) return;
+    const campaignIds = uniqueCampaignIdsFromSelection();
+    if (files.length === 0 || campaignIds.length === 0) return;
     if (files.length > MAX_FILES_PER_BATCH) {
       setError(`Maximo ${MAX_FILES_PER_BATCH} arquivos por vez (voce selecionou ${files.length})`);
       return;
     }
     setBusy(true);
     setError(null);
-    setProgress({ done: 0, total: files.length });
+    const total = files.length * campaignIds.length;
+    setProgress({ done: 0, total });
 
     const failures: { name: string; err: string }[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      try {
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('type', 'reel'); // Story removido do UI; sistema posta tudo no feed
-        fd.append('campaignId', campaignId);
-        if (caption) fd.append('caption', caption);
-        await api('/api/media', { method: 'POST', formData: fd });
-      } catch (err) {
-        failures.push({ name: file.name, err: err instanceof Error ? err.message : 'erro' });
+    let done = 0;
+    for (const file of files) {
+      for (const campaignId of campaignIds) {
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          fd.append('type', 'reel'); // Story removido do UI; sistema posta tudo no feed
+          fd.append('campaignId', campaignId);
+          if (caption) fd.append('caption', caption);
+          await api('/api/media', { method: 'POST', formData: fd });
+        } catch (err) {
+          failures.push({
+            name: `${file.name} → campanha ${campaignId.slice(0, 6)}`,
+            err: err instanceof Error ? err.message : 'erro',
+          });
+        }
+        done++;
+        setProgress({ done, total });
       }
-      setProgress({ done: i + 1, total: files.length });
     }
 
     if (failures.length > 0) {
       setError(
-        `${files.length - failures.length} de ${files.length} enviados. Falhas:\n` +
+        `${total - failures.length} de ${total} enviados. Falhas:\n` +
           failures.map((f) => `  - ${f.name}: ${f.err}`).join('\n')
       );
     } else {
       setFiles([]);
       setCaption('');
+      setSelectedAccounts(new Set());
     }
     setBusy(false);
     setProgress(null);
@@ -152,22 +175,70 @@ export default function MediaPage() {
         <CardContent>
           <form onSubmit={submit} className="grid grid-cols-1 gap-4">
             <div className="space-y-1">
-              <Label>Campanha</Label>
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-                value={campaignId}
-                onChange={(e) => setCampaignId(e.target.value)}
-                required
-              >
-                {campaigns.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center justify-between">
+                <Label>
+                  Contas (selecione 1 ou mais — sobe a midia em todas)
+                </Label>
+                {accounts.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={() => {
+                      if (selectedAccounts.size === accounts.length) {
+                        setSelectedAccounts(new Set());
+                      } else {
+                        setSelectedAccounts(new Set(accounts.map((a) => a.id)));
+                      }
+                    }}
+                  >
+                    {selectedAccounts.size === accounts.length ? 'Desmarcar todas' : 'Marcar todas'}
+                  </button>
+                )}
+              </div>
+              <div className="border border-input rounded-md p-2 max-h-48 overflow-y-auto space-y-1">
+                {accounts.length === 0 && (
+                  <p className="text-sm text-muted-foreground py-2">
+                    Nenhuma conta cadastrada. Cadastre em &quot;Contas Instagram&quot; primeiro.
+                  </p>
+                )}
+                {accounts.map((a) => {
+                  const camp = campaigns.find((c) => c.id === a.campaignId);
+                  const noCamp = !a.campaignId;
+                  return (
+                    <label
+                      key={a.id}
+                      className={`flex items-center gap-2 text-sm py-1 px-2 rounded hover:bg-accent cursor-pointer ${noCamp ? 'opacity-50' : ''}`}
+                      title={noCamp ? 'Conta sem campanha — vincule uma campanha primeiro' : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedAccounts.has(a.id)}
+                        disabled={noCamp}
+                        onChange={() => {
+                          setSelectedAccounts((s) => {
+                            const n = new Set(s);
+                            if (n.has(a.id)) n.delete(a.id);
+                            else n.add(a.id);
+                            return n;
+                          });
+                        }}
+                      />
+                      <span className="font-medium">@{a.username}</span>
+                      <span className="text-muted-foreground">
+                        — {noCamp ? 'sem campanha' : camp?.name ?? 'campanha desconhecida'}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {selectedAccounts.size > 0 && files.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {files.length} arquivo{files.length > 1 ? 's' : ''} × {uniqueCampaignIdsFromSelection().length} campanha{uniqueCampaignIdsFromSelection().length > 1 ? 's' : ''} = <strong>{files.length * uniqueCampaignIdsFromSelection().length} mídia{files.length * uniqueCampaignIdsFromSelection().length > 1 ? 's' : ''}</strong> serão criadas
+                </p>
+              )}
             </div>
             <div className="space-y-1">
-              <Label>Caption (mesma para todas as midias selecionadas)</Label>
+              <Label>Caption (mesma para todas as midias)</Label>
               <Textarea value={caption} onChange={(e) => setCaption(e.target.value)} rows={2} />
             </div>
             <div className="space-y-1">
@@ -192,8 +263,15 @@ export default function MediaPage() {
             )}
             {error && <p className="text-destructive text-sm whitespace-pre-line">{error}</p>}
             <div className="flex justify-end">
-              <Button type="submit" disabled={busy || files.length === 0}>
-                {busy ? 'Enviando...' : `Enviar ${files.length > 0 ? `(${files.length})` : ''}`}
+              <Button
+                type="submit"
+                disabled={busy || files.length === 0 || selectedAccounts.size === 0}
+              >
+                {busy
+                  ? 'Enviando...'
+                  : files.length > 0 && selectedAccounts.size > 0
+                    ? `Enviar (${files.length * uniqueCampaignIdsFromSelection().length} mídias)`
+                    : 'Enviar'}
               </Button>
             </div>
           </form>
@@ -202,32 +280,73 @@ export default function MediaPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
+          <CardTitle className="flex items-center justify-between gap-2 flex-wrap">
             <span>Acervo</span>
-            {selected.size > 0 && (
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={bulkDelete}
-                disabled={bulkBusy}
+            <div className="flex items-center gap-2">
+              <select
+                className="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={filterCampaignId}
+                onChange={(e) => {
+                  setFilterCampaignId(e.target.value);
+                  setSelected(new Set()); // limpa selecao ao filtrar
+                }}
               >
-                {bulkBusy ? 'Excluindo...' : `Excluir ${selected.size} selecionada${selected.size > 1 ? 's' : ''}`}
-              </Button>
-            )}
+                <option value="">Todas as campanhas</option>
+                {campaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              {selected.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={bulkDelete}
+                  disabled={bulkBusy}
+                >
+                  {bulkBusy ? 'Excluindo...' : `Excluir ${selected.size} selecionada${selected.size > 1 ? 's' : ''}`}
+                </Button>
+              )}
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {(() => {
+            const filteredItems = filterCampaignId
+              ? items.filter((m) => m.campaignId === filterCampaignId)
+              : items;
+            return (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
                   <input
                     type="checkbox"
-                    checked={items.length > 0 && selected.size === items.length}
+                    checked={filteredItems.length > 0 && filteredItems.every((m) => selected.has(m.id))}
                     ref={(el) => {
-                      if (el) el.indeterminate = selected.size > 0 && selected.size < items.length;
+                      if (el) {
+                        const allSelected = filteredItems.length > 0 && filteredItems.every((m) => selected.has(m.id));
+                        const someSelected = filteredItems.some((m) => selected.has(m.id));
+                        el.indeterminate = !allSelected && someSelected;
+                      }
                     }}
-                    onChange={toggleAll}
+                    onChange={() => {
+                      const allSelected = filteredItems.length > 0 && filteredItems.every((m) => selected.has(m.id));
+                      if (allSelected) {
+                        setSelected((s) => {
+                          const n = new Set(s);
+                          filteredItems.forEach((m) => n.delete(m.id));
+                          return n;
+                        });
+                      } else {
+                        setSelected((s) => {
+                          const n = new Set(s);
+                          filteredItems.forEach((m) => n.add(m.id));
+                          return n;
+                        });
+                      }
+                    }}
                     aria-label="Selecionar todas"
                   />
                 </TableHead>
@@ -240,7 +359,7 @@ export default function MediaPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map((m) => (
+              {filteredItems.map((m) => (
                 <TableRow key={m.id} data-state={selected.has(m.id) ? 'selected' : undefined}>
                   <TableCell>
                     <input
@@ -275,15 +394,19 @@ export default function MediaPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {!items.length && (
+              {!filteredItems.length && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
-                    Nenhuma mídia cadastrada.
+                    {items.length === 0
+                      ? 'Nenhuma mídia cadastrada.'
+                      : 'Nenhuma mídia nessa campanha. Tire o filtro pra ver outras.'}
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
+            );
+          })()}
         </CardContent>
       </Card>
     </div>
