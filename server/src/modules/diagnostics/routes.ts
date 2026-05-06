@@ -5,10 +5,52 @@ import { realDriver } from '../../automation/real-driver.js';
 import { mockDriver } from '../../automation/mock-driver.js';
 import { env } from '../../env.js';
 import { captureDebug } from '../../automation/playwright-helpers.js';
+import { getWorkerState } from '../../queue/poller.js';
 import { chromium } from 'playwright';
 
 export async function diagnosticsRoutes(app: FastifyInstance) {
   app.addHook('preHandler', app.authenticate);
+
+  // Estado interno do worker pra debug ("por que jobs nao estao rodando?")
+  app.get('/diagnostics/worker', async () => {
+    const state = getWorkerState();
+    const cap = await prisma.appSetting.findUnique({
+      where: { key: 'MAX_ACTIVE_ACCOUNTS' },
+    });
+    const accounts = await prisma.instagramAccount.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    });
+    const accountStats: Record<string, number> = {};
+    for (const a of accounts) accountStats[a.status] = a._count._all;
+    const queuedNow = await prisma.postJob.count({
+      where: { status: 'queued', scheduledFor: { lte: new Date() } },
+    });
+    const runningInDb = await prisma.postJob.count({ where: { status: 'running' } });
+    const lastTickSecondsAgo = state.lastTickAt
+      ? Math.round((Date.now() - state.lastTickAt) / 1000)
+      : null;
+    return {
+      worker: {
+        ...state,
+        lastTickSecondsAgo,
+        // Worker considerado "vivo" se ultimo tick foi ha menos de 30s
+        alive: lastTickSecondsAgo !== null && lastTickSecondsAgo < 30,
+      },
+      jobs: {
+        queuedReadyNow: queuedNow,
+        runningInDb,
+        runningInMemory: state.inFlight.length,
+      },
+      accounts: accountStats,
+      cap: {
+        configured: cap ? parseInt(cap.value, 10) : null,
+        hint: cap?.value === '1' && (accountStats.active ?? 0) > 1
+          ? `Voce tem ${accountStats.active} contas ativas mas o cap esta em 1. Apenas 1 conta sera processada por vez. Aumente em Configuracoes.`
+          : null,
+      },
+    };
+  });
 
   app.get('/diagnostics/adspower', async () => {
     const health = await adsPowerClient.health();

@@ -13,9 +13,18 @@ type TimelineJob = PostJob & {
   media?: { id: string; type: string; filePath: string };
 };
 
+interface WorkerDiag {
+  worker: { alive: boolean; lastTickSecondsAgo: number | null; tickCount: number };
+  jobs: { queuedReadyNow: number; runningInDb: number; runningInMemory: number };
+  accounts: Record<string, number>;
+  cap: { configured: number | null; hint: string | null };
+}
+
 export default function DashboardHomePage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [timeline, setTimeline] = useState<TimelineJob[]>([]);
+  const [workerDiag, setWorkerDiag] = useState<WorkerDiag | null>(null);
+  const [lastHeartbeat, setLastHeartbeat] = useState<number | null>(null);
 
   async function load() {
     try {
@@ -23,14 +32,16 @@ export default function DashboardHomePage() {
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(startOfDay);
       endOfDay.setDate(endOfDay.getDate() + 1);
-      const [s, t] = await Promise.all([
+      const [s, t, w] = await Promise.all([
         api<DashboardSummary>('/api/dashboard/summary'),
         api<TimelineJob[]>(
           `/api/jobs?from=${startOfDay.toISOString()}&to=${endOfDay.toISOString()}&limit=200`
         ),
+        api<WorkerDiag>('/api/diagnostics/worker').catch(() => null),
       ]);
       setSummary(s);
       setTimeline(t);
+      if (w) setWorkerDiag(w);
     } catch {
       /* api error already handled (redirect on 401) */
     }
@@ -42,6 +53,8 @@ export default function DashboardHomePage() {
     const off = connectSse((event) => {
       if (event.type === 'job-update' || event.type === 'account-update' || event.type === 'log') {
         load();
+      } else if (event.type === 'worker-heartbeat') {
+        setLastHeartbeat(event.payload.at);
       }
     });
     return () => {
@@ -50,12 +63,56 @@ export default function DashboardHomePage() {
     };
   }, []);
 
+  // Considera worker "vivo" se heartbeat foi nos ultimos 30s
+  const heartbeatSecondsAgo = lastHeartbeat ? Math.round((Date.now() - lastHeartbeat) / 1000) : null;
+  const workerAlive =
+    (heartbeatSecondsAgo !== null && heartbeatSecondsAgo < 30) || workerDiag?.worker.alive === true;
+
   return (
     <div className="space-y-6">
       <header>
         <h2 className="text-2xl font-semibold">Dashboard</h2>
         <p className="text-sm text-muted-foreground">Visão geral da operação em tempo real</p>
       </header>
+
+      {/* Status do Worker — vital pra saber se sistema ta processando jobs */}
+      <Card className={workerAlive ? 'border-green-700' : 'border-red-700'}>
+        <CardContent className="flex items-center gap-4 py-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-block w-2 h-2 rounded-full ${
+                workerAlive ? 'bg-green-500' : 'bg-red-500'
+              }`}
+            />
+            <span className="font-medium text-sm">
+              Worker: {workerAlive ? 'ativo' : 'NÃO está respondendo'}
+            </span>
+            {workerDiag?.worker.lastTickSecondsAgo !== null &&
+              workerDiag?.worker.lastTickSecondsAgo !== undefined && (
+                <span className="text-xs text-muted-foreground">
+                  (último ciclo há {workerDiag.worker.lastTickSecondsAgo}s)
+                </span>
+              )}
+          </div>
+          {workerDiag && (
+            <div className="text-xs text-muted-foreground flex gap-4">
+              <span>{workerDiag.jobs.queuedReadyNow} fila prontos</span>
+              <span>{workerDiag.jobs.runningInDb} rodando agora</span>
+              {workerDiag.cap.configured !== null && (
+                <span>Cap: {workerDiag.cap.configured}</span>
+              )}
+            </div>
+          )}
+          {workerDiag?.cap.hint && (
+            <div className="w-full text-xs text-yellow-500">⚠ {workerDiag.cap.hint}</div>
+          )}
+          {!workerAlive && (
+            <div className="w-full text-xs text-red-500">
+              Worker não está rodando. Feche as 3 janelas do sistema e abra de novo o atalho da área de trabalho.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <section className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Stat title="Na fila" value={summary?.jobs.queued ?? 0} variant="info" />

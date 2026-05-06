@@ -33,12 +33,11 @@ async function main() {
   });
   console.log(`✓ campanha: ${campaign.name}`);
 
-  await prisma.appSetting.upsert({
-    where: { key: 'MAX_ACTIVE_ACCOUNTS' },
-    update: {},
-    create: { key: 'MAX_ACTIVE_ACCOUNTS', value: '1' },
-  });
-  console.log('✓ settings');
+  // MAX_ACTIVE_ACCOUNTS NAO eh criado por padrao. Sem essa key = sem cap = todas as
+  // contas active sao processadas. Antes o seed criava com valor "1" pra rollout
+  // progressivo da Etapa 4 da spec, mas isso fazia jobs de 2+ contas ficarem queued
+  // pra sempre sem aviso. Hoje quem quiser limitar pode criar via UI Configuracoes.
+  console.log('✓ settings (MAX_ACTIVE_ACCOUNTS sem cap por padrao - configure em /dashboard/settings se quiser limitar)');
 }
 
 main()

@@ -116,4 +116,5 @@ export type SseEvent =
   | { type: 'log'; payload: AutomationLog }
   | { type: 'job-update'; payload: PostJob }
   | { type: 'account-update'; payload: InstagramAccount }
-  | { type: 'alert'; payload: { severity: 'warn' | 'error'; message: string; sound?: boolean } };
+  | { type: 'alert'; payload: { severity: 'warn' | 'error'; message: string; sound?: boolean } }
+  | { type: 'worker-heartbeat'; payload: { at: number; tickCount: number; inFlight: number } };
