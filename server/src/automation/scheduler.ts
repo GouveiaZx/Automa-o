@@ -72,6 +72,64 @@ export async function scheduleNextForAccount(accountId: string): Promise<void> {
   await maybeScheduleType('reel', c.reelsPerDay - counts.reel, accountId, c, lastScheduled);
 }
 
+/**
+ * Calcula proximos N horarios baseado na campanha:
+ * - Se fixedTimes setado (ex: "00:00,03:00,06:00,12:00,18:00"), usa esses horarios
+ * - Caso contrario, usa intervalo aleatorio min/max dentro da janela
+ */
+function nextSlots(
+  campaign: {
+    minIntervalMin: number;
+    maxIntervalMin: number;
+    windowStart: string;
+    windowEnd: string;
+    fixedTimes: string | null;
+  },
+  count: number,
+  lastScheduled: Date
+): Date[] {
+  const slots: Date[] = [];
+
+  // Modo horarios fixos: usa lista CSV de "HH:MM"
+  if (campaign.fixedTimes && campaign.fixedTimes.trim().length > 0) {
+    const times = campaign.fixedTimes
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => /^\d{2}:\d{2}$/.test(t));
+    if (times.length > 0) {
+      // Comeca pegando o proximo horario apos lastScheduled
+      let cursor = new Date(lastScheduled);
+      while (slots.length < count) {
+        // Gera horarios fixos pra "cursor" (dia atual)
+        const candidates = times.map((t) => timeOnDate(t, cursor));
+        // Filtra os que sao APOS lastScheduled
+        const future = candidates.filter((d) => d > lastScheduled);
+        future.sort((a, b) => a.getTime() - b.getTime());
+        for (const c of future) {
+          if (slots.length >= count) break;
+          slots.push(c);
+          lastScheduled = c;
+        }
+        // Se ainda falta, vai pro dia seguinte
+        cursor = new Date(cursor);
+        cursor.setDate(cursor.getDate() + 1);
+        cursor.setHours(0, 0, 0, 0);
+      }
+      return slots;
+    }
+  }
+
+  // Modo intervalo aleatorio (comportamento padrao)
+  let next = lastScheduled;
+  for (let i = 0; i < count; i++) {
+    const delta = rand(campaign.minIntervalMin, campaign.maxIntervalMin) * 60 * 1000;
+    next = new Date(next.getTime() + delta);
+    next = clampToWindow(next, campaign.windowStart, campaign.windowEnd);
+    slots.push(next);
+  }
+  return slots;
+}
+
 async function maybeScheduleType(
   type: MediaType,
   remaining: number,
@@ -82,6 +140,7 @@ async function maybeScheduleType(
     maxIntervalMin: number;
     windowStart: string;
     windowEnd: string;
+    fixedTimes: string | null;
   },
   lastScheduled: Date
 ): Promise<void> {
@@ -97,12 +156,11 @@ async function maybeScheduleType(
   });
   if (!candidates.length) return;
 
-  let next = lastScheduled;
-  for (const media of candidates) {
-    const delta = rand(campaign.minIntervalMin, campaign.maxIntervalMin) * 60 * 1000;
-    next = new Date(next.getTime() + delta);
-    next = clampToWindow(next, campaign.windowStart, campaign.windowEnd);
+  const slots = nextSlots(campaign, candidates.length, lastScheduled);
 
+  for (let i = 0; i < candidates.length; i++) {
+    const media = candidates[i];
+    const next = slots[i];
     await prisma.postJob.create({
       data: {
         accountId,

@@ -16,6 +16,7 @@ export interface Campaign {
   maxIntervalMin: number;
   storiesPerDay: number;
   reelsPerDay: number;
+  fixedTimes: string | null;
   active: boolean;
   createdAt: string;
 }
@@ -36,6 +37,7 @@ export interface InstagramAccount {
   displayName: string | null;
   bio: string | null;
   websiteUrl: string | null;
+  groupName: string | null;
   status: AccountStatus;
   lastFailureAt: string | null;
   consecutiveFails: number;
@@ -52,6 +54,7 @@ export interface MediaItem {
   caption: string | null;
   linkUrl: string | null;
   thumbnail: string | null;
+  tag: string | null;
   campaignId: string;
   publishedAt: string | null;
   usedCount: number;

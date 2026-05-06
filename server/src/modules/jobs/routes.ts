@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { scheduleJobSchema, scheduleBulkSchema } from '@automacao/shared';
+import { scheduleJobSchema, scheduleBulkSchema, scheduleBulkMultiSchema } from '@automacao/shared';
 import { prisma } from '../../prisma.js';
 import { bus } from '../../events.js';
 import { appLog } from '../../logger.js';
@@ -139,6 +139,84 @@ export async function jobRoutes(app: FastifyInstance) {
       accountId: account.id,
     });
     return { count: created.length, jobs: created };
+  });
+
+  // Schedule-bulk-multi: agenda as MESMAS midias em N contas (loop sobre cada conta).
+  // Cada conta recebe N jobs (1 por midia). Total: contas x midias jobs.
+  app.post('/jobs/schedule-bulk-multi', async (req, reply) => {
+    const parsed = scheduleBulkMultiSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'invalid_input', details: parsed.error.flatten() });
+    }
+    const accounts = await prisma.instagramAccount.findMany({
+      where: { id: { in: parsed.data.accountIds } },
+      include: { adsPowerProfile: true },
+    });
+    if (accounts.length !== parsed.data.accountIds.length) {
+      return reply.status(404).send({ error: 'some_account_not_found' });
+    }
+    const accountsWithoutProfile = accounts.filter((a) => !a.adsPowerProfileId);
+    if (accountsWithoutProfile.length > 0) {
+      return reply.status(400).send({
+        error: 'some_account_without_profile',
+        usernames: accountsWithoutProfile.map((a) => a.username),
+      });
+    }
+
+    const medias = await prisma.mediaItem.findMany({
+      where: { id: { in: parsed.data.mediaIds } },
+    });
+    if (medias.length !== parsed.data.mediaIds.length) {
+      return reply.status(404).send({ error: 'some_media_not_found' });
+    }
+
+    const now = Date.now();
+    const windowMs = (() => {
+      switch (parsed.data.spreadOver) {
+        case 'now':
+          return 0;
+        case 'hour':
+          return 60 * 60 * 1000;
+        case '24h':
+          return 24 * 60 * 60 * 1000;
+        case 'today':
+        default: {
+          const end = new Date();
+          end.setHours(23, 59, 0, 0);
+          return Math.max(end.getTime() - now, 60 * 60 * 1000);
+        }
+      }
+    })();
+
+    let totalCreated = 0;
+    for (const account of accounts) {
+      const slots = medias.length;
+      for (let i = 0; i < slots; i++) {
+        const offset = slots === 1 ? 0 : (windowMs / slots) * i;
+        // Adiciona pequeno desvio aleatorio entre contas pra nao postar todas no mesmo segundo
+        const accountJitter = Math.floor(Math.random() * 60_000); // ate 60s
+        const scheduledFor = new Date(now + offset + accountJitter);
+        const job = await prisma.postJob.create({
+          data: {
+            accountId: account.id,
+            mediaId: medias[i].id,
+            type: medias[i].type,
+            status: 'queued',
+            scheduledFor,
+          },
+          include: { account: true, media: true },
+        });
+        totalCreated++;
+        bus.emitEvent({ type: 'job-update', payload: serializeJob(job) });
+      }
+    }
+
+    await appLog({
+      source: 'api',
+      level: 'info',
+      message: `Bulk-multi scheduled ${totalCreated} job(s) em ${accounts.length} conta(s) com ${medias.length} midia(s) (spread=${parsed.data.spreadOver})`,
+    });
+    return { count: totalCreated, accounts: accounts.length, medias: medias.length };
   });
 
   app.post('/jobs/:id/retry', {

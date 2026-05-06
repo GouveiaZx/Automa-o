@@ -24,7 +24,8 @@ export default function AccountsPage() {
   const [items, setItems] = useState<InstagramAccount[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [profiles, setProfiles] = useState<AdsPowerProfile[]>([]);
-  const [form, setForm] = useState({ username: '', displayName: '', bio: '', campaignId: '', adsPowerProfileId: '' });
+  const [form, setForm] = useState({ username: '', displayName: '', bio: '', groupName: '', campaignId: '', adsPowerProfileId: '' });
+  const [filterGroup, setFilterGroup] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [validatingId, setValidatingId] = useState<string | null>(null);
@@ -60,11 +61,12 @@ export default function AccountsPage() {
           username: form.username,
           displayName: form.displayName || null,
           bio: form.bio || null,
+          groupName: form.groupName || null,
           campaignId: form.campaignId || null,
           adsPowerProfileId: form.adsPowerProfileId || null,
         },
       });
-      setForm({ username: '', displayName: '', bio: '', campaignId: '', adsPowerProfileId: '' });
+      setForm({ username: '', displayName: '', bio: '', groupName: '', campaignId: '', adsPowerProfileId: '' });
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'erro');
@@ -206,6 +208,18 @@ export default function AccountsPage() {
                 placeholder="Texto da bio do perfil IG"
               />
             </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label>Grupo (opcional, pra organizar contas)</Label>
+              <Input
+                placeholder="Ex: Modelo A, Vazadas BR, Conjunto Premium"
+                value={form.groupName}
+                onChange={(e) => setForm({ ...form, groupName: e.target.value })}
+                maxLength={80}
+              />
+              <p className="text-xs text-muted-foreground">
+                Filtra contas por grupo na lista abaixo. Pode usar pra agrupar modelos.
+              </p>
+            </div>
             <div className="space-y-1">
               <Label>Campanha</Label>
               <select
@@ -248,20 +262,39 @@ export default function AccountsPage() {
         <CardHeader>
           <CardTitle className="flex items-center justify-between gap-2 flex-wrap">
             <span>Existentes</span>
-            {selected.size > 0 && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={bulkValidate}
-                disabled={bulkValidating}
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                className="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={filterGroup}
+                onChange={(e) => {
+                  setFilterGroup(e.target.value);
+                  setSelected(new Set());
+                }}
               >
-                {bulkValidating ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Validando {selected.size}...</>
-                ) : (
-                  <><CheckCircle2 className="h-4 w-4 mr-2" /> Validar {selected.size} selecionada{selected.size > 1 ? 's' : ''}</>
-                )}
-              </Button>
-            )}
+                <option value="">Todos os grupos</option>
+                {Array.from(new Set(items.map((i) => i.groupName).filter(Boolean) as string[]))
+                  .sort()
+                  .map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+              </select>
+              {selected.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={bulkValidate}
+                  disabled={bulkValidating}
+                >
+                  {bulkValidating ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Validando {selected.size}...</>
+                  ) : (
+                    <><CheckCircle2 className="h-4 w-4 mr-2" /> Validar {selected.size} selecionada{selected.size > 1 ? 's' : ''}</>
+                  )}
+                </Button>
+              )}
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -280,6 +313,7 @@ export default function AccountsPage() {
                   />
                 </TableHead>
                 <TableHead>Conta</TableHead>
+                <TableHead>Grupo</TableHead>
                 <TableHead>Campanha</TableHead>
                 <TableHead>Perfil AdsPower</TableHead>
                 <TableHead>Status</TableHead>
@@ -288,7 +322,7 @@ export default function AccountsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map((a) => (
+              {(filterGroup ? items.filter((a) => a.groupName === filterGroup) : items).map((a) => (
                 <TableRow key={a.id} data-state={selected.has(a.id) ? 'selected' : undefined}>
                   <TableCell>
                     <input
@@ -308,6 +342,9 @@ export default function AccountsPage() {
                         {a.bio}
                       </div>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    {a.groupName ? <Badge variant="secondary">{a.groupName}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
                   </TableCell>
                   <TableCell>{a.campaign?.name ?? '—'}</TableCell>
                   <TableCell>{a.adsPowerProfile?.name ?? '—'}</TableCell>
@@ -359,7 +396,7 @@ export default function AccountsPage() {
               ))}
               {!items.length && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
                     Nenhuma conta cadastrada.
                   </TableCell>
                 </TableRow>

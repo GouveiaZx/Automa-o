@@ -21,7 +21,9 @@ export default function MediaPage() {
   const [accounts, setAccounts] = useState<InstagramAccount[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
   const [filterCampaignId, setFilterCampaignId] = useState<string>('');
+  const [filterTag, setFilterTag] = useState<string>('');
   const [caption, setCaption] = useState('');
+  const [tag, setTag] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -76,6 +78,7 @@ export default function MediaPage() {
           fd.append('type', 'reel'); // Story removido do UI; sistema posta tudo no feed
           fd.append('campaignId', campaignId);
           if (caption) fd.append('caption', caption);
+          if (tag) fd.append('tag', tag);
           await api('/api/media', { method: 'POST', formData: fd });
         } catch (err) {
           failures.push({
@@ -96,6 +99,7 @@ export default function MediaPage() {
     } else {
       setFiles([]);
       setCaption('');
+      setTag('');
       setSelectedAccounts(new Set());
     }
     setBusy(false);
@@ -242,6 +246,18 @@ export default function MediaPage() {
               <Textarea value={caption} onChange={(e) => setCaption(e.target.value)} rows={2} />
             </div>
             <div className="space-y-1">
+              <Label>Tag (opcional, pra organizar)</Label>
+              <Input
+                placeholder="Ex: Vazadas, Modelo X, Promo Junho"
+                value={tag}
+                onChange={(e) => setTag(e.target.value)}
+                maxLength={80}
+              />
+              <p className="text-xs text-muted-foreground">
+                Mesma tag eh aplicada em todas as midias do lote. Filtra no Acervo abaixo.
+              </p>
+            </div>
+            <div className="space-y-1">
               <Label>Arquivos (selecione ate {MAX_FILES_PER_BATCH} videos de uma vez)</Label>
               <Input
                 type="file"
@@ -282,7 +298,7 @@ export default function MediaPage() {
         <CardHeader>
           <CardTitle className="flex items-center justify-between gap-2 flex-wrap">
             <span>Acervo</span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <select
                 className="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm"
                 value={filterCampaignId}
@@ -297,6 +313,23 @@ export default function MediaPage() {
                     {c.name}
                   </option>
                 ))}
+              </select>
+              <select
+                className="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={filterTag}
+                onChange={(e) => {
+                  setFilterTag(e.target.value);
+                  setSelected(new Set());
+                }}
+              >
+                <option value="">Todas as tags</option>
+                {Array.from(new Set(items.map((i) => i.tag).filter(Boolean) as string[]))
+                  .sort()
+                  .map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
               </select>
               {selected.size > 0 && (
                 <Button
@@ -313,9 +346,11 @@ export default function MediaPage() {
         </CardHeader>
         <CardContent>
           {(() => {
-            const filteredItems = filterCampaignId
-              ? items.filter((m) => m.campaignId === filterCampaignId)
-              : items;
+            const filteredItems = items.filter((m) => {
+              if (filterCampaignId && m.campaignId !== filterCampaignId) return false;
+              if (filterTag && m.tag !== filterTag) return false;
+              return true;
+            });
             return (
           <Table>
             <TableHeader>
@@ -352,6 +387,7 @@ export default function MediaPage() {
                 </TableHead>
                 <TableHead>Tipo</TableHead>
                 <TableHead>Arquivo</TableHead>
+                <TableHead>Tag</TableHead>
                 <TableHead>Caption</TableHead>
                 <TableHead>Usos</TableHead>
                 <TableHead>Publicado</TableHead>
@@ -382,6 +418,9 @@ export default function MediaPage() {
                       {m.filePath}
                     </a>
                   </TableCell>
+                  <TableCell>
+                    {m.tag ? <Badge variant="secondary">{m.tag}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
+                  </TableCell>
                   <TableCell className="max-w-xs truncate">
                     <div>{m.caption ?? '—'}</div>
                   </TableCell>
@@ -396,10 +435,10 @@ export default function MediaPage() {
               ))}
               {!filteredItems.length && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
                     {items.length === 0
                       ? 'Nenhuma mídia cadastrada.'
-                      : 'Nenhuma mídia nessa campanha. Tire o filtro pra ver outras.'}
+                      : 'Nenhuma mídia bate com os filtros. Tire pra ver outras.'}
                   </TableCell>
                 </TableRow>
               )}

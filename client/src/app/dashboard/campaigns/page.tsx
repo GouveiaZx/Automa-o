@@ -21,6 +21,7 @@ const empty = {
   maxIntervalMin: 240,
   storiesPerDay: 3,
   reelsPerDay: 1,
+  fixedTimes: '',
   active: true,
 };
 
@@ -48,6 +49,7 @@ export default function CampaignsPage() {
         body: {
           ...form,
           description: form.description || null,
+          fixedTimes: form.fixedTimes.trim() || null,
         },
       });
       setForm(empty);
@@ -140,6 +142,19 @@ export default function CampaignsPage() {
                 />
               </Field>
             </Grid>
+            <div className="space-y-1">
+              <Label>Horarios fixos (opcional)</Label>
+              <Input
+                placeholder="00:00, 03:00, 06:00, 12:00, 18:00"
+                value={form.fixedTimes}
+                onChange={(e) => setForm({ ...form, fixedTimes: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                Se preenchido, o sistema posta nesses horarios fixos toda vez (ignora os
+                intervalos aleatorios acima). Formato: &quot;HH:MM&quot; separados por virgula.
+                Deixa vazio pra usar intervalo aleatorio.
+              </p>
+            </div>
             {error && <p className="text-destructive text-sm md:col-span-2">{error}</p>}
             <div className="md:col-span-2 flex justify-end">
               <Button type="submit" disabled={busy}>
@@ -174,7 +189,9 @@ export default function CampaignsPage() {
                     {c.windowStart} – {c.windowEnd}
                   </TableCell>
                   <TableCell>
-                    {c.minIntervalMin}–{c.maxIntervalMin} min
+                    {c.fixedTimes
+                      ? `fixos: ${c.fixedTimes}`
+                      : `${c.minIntervalMin}–${c.maxIntervalMin} min`}
                   </TableCell>
                   <TableCell>
                     {c.storiesPerDay} / {c.reelsPerDay}

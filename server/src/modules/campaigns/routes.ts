@@ -24,7 +24,13 @@ export async function campaignRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.status(400).send({ error: 'invalid_input', details: parsed.error.flatten() });
     }
-    return prisma.campaign.create({ data: { ...parsed.data, description: parsed.data.description ?? null } });
+    return prisma.campaign.create({
+      data: {
+        ...parsed.data,
+        description: parsed.data.description ?? null,
+        fixedTimes: parsed.data.fixedTimes ?? null,
+      },
+    });
   });
 
   app.put('/campaigns/:id', async (req, reply) => {

@@ -35,10 +35,12 @@ export default function JobsPage() {
 
   // bulk
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkAccountId, setBulkAccountId] = useState('');
+  const [bulkAccountIds, setBulkAccountIds] = useState<string[]>([]);
   const [bulkMediaIds, setBulkMediaIds] = useState<string[]>([]);
   const [bulkSpread, setBulkSpread] = useState<'now' | 'hour' | 'today' | '24h'>('today');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkFilterGroup, setBulkFilterGroup] = useState<string>('');
+  const [bulkFilterTag, setBulkFilterTag] = useState<string>('');
 
   async function load() {
     const [j, a, m] = await Promise.all([
@@ -83,17 +85,35 @@ export default function JobsPage() {
   }
 
   async function submitBulk() {
-    if (!bulkAccountId || bulkMediaIds.length === 0) return;
+    if (bulkAccountIds.length === 0 || bulkMediaIds.length === 0) return;
     setBulkBusy(true);
     try {
-      await api('/api/jobs/schedule-bulk', {
-        method: 'POST',
-        body: { accountId: bulkAccountId, mediaIds: bulkMediaIds, spreadOver: bulkSpread },
-      });
+      // Se 1 conta, usa endpoint single (mais simples). Se 2+, usa multi.
+      if (bulkAccountIds.length === 1) {
+        await api('/api/jobs/schedule-bulk', {
+          method: 'POST',
+          body: {
+            accountId: bulkAccountIds[0],
+            mediaIds: bulkMediaIds,
+            spreadOver: bulkSpread,
+          },
+        });
+      } else {
+        await api('/api/jobs/schedule-bulk-multi', {
+          method: 'POST',
+          body: {
+            accountIds: bulkAccountIds,
+            mediaIds: bulkMediaIds,
+            spreadOver: bulkSpread,
+          },
+        });
+      }
       setBulkOpen(false);
-      setBulkAccountId('');
+      setBulkAccountIds([]);
       setBulkMediaIds([]);
       setBulkSpread('today');
+      setBulkFilterGroup('');
+      setBulkFilterTag('');
       load();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'erro no bulk');
@@ -104,6 +124,12 @@ export default function JobsPage() {
 
   function toggleBulkMedia(id: string) {
     setBulkMediaIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  function toggleBulkAccount(id: string) {
+    setBulkAccountIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   }
@@ -129,24 +155,89 @@ export default function JobsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1">
-              <Label>Conta</Label>
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-                value={bulkAccountId}
-                onChange={(e) => setBulkAccountId(e.target.value)}
-              >
-                <option value="">— escolha —</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    @{a.username}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <Label>Contas ({bulkAccountIds.length} selecionada{bulkAccountIds.length !== 1 ? 's' : ''})</Label>
+                <div className="flex gap-2 items-center">
+                  <select
+                    className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                    value={bulkFilterGroup}
+                    onChange={(e) => setBulkFilterGroup(e.target.value)}
+                  >
+                    <option value="">Todos os grupos</option>
+                    {Array.from(new Set(accounts.map((a) => a.groupName).filter(Boolean) as string[]))
+                      .sort()
+                      .map((g) => (
+                        <option key={g} value={g}>{g}</option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={() => {
+                      const filtered = bulkFilterGroup
+                        ? accounts.filter((a) => a.groupName === bulkFilterGroup)
+                        : accounts;
+                      const allIds = filtered.map((a) => a.id);
+                      const allSelected = allIds.every((id) => bulkAccountIds.includes(id));
+                      if (allSelected) {
+                        setBulkAccountIds((prev) => prev.filter((id) => !allIds.includes(id)));
+                      } else {
+                        setBulkAccountIds((prev) => Array.from(new Set([...prev, ...allIds])));
+                      }
+                    }}
+                  >
+                    {accounts.length > 0 && bulkAccountIds.length === accounts.length ? 'Desmarcar todas' : 'Marcar todas'}
+                  </button>
+                </div>
+              </div>
+              <div className="border rounded-md max-h-48 overflow-auto">
+                {(bulkFilterGroup ? accounts.filter((a) => a.groupName === bulkFilterGroup) : accounts).map((a) => {
+                  const checked = bulkAccountIds.includes(a.id);
+                  return (
+                    <label
+                      key={a.id}
+                      className="flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer text-sm"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleBulkAccount(a.id)}
+                      />
+                      <span className="font-medium">@{a.username}</span>
+                      {a.groupName && (
+                        <Badge variant="secondary" className="text-xs">{a.groupName}</Badge>
+                      )}
+                      <span className="text-muted-foreground text-xs flex-1 truncate">
+                        {a.campaign?.name ?? 'sem campanha'}
+                      </span>
+                    </label>
+                  );
+                })}
+                {!accounts.length && (
+                  <p className="px-3 py-4 text-sm text-muted-foreground text-center">
+                    Nenhuma conta cadastrada.
+                  </p>
+                )}
+              </div>
             </div>
             <div className="space-y-1">
-              <Label>Mídias ({bulkMediaIds.length} selecionadas)</Label>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <Label>Mídias ({bulkMediaIds.length} selecionadas)</Label>
+                <select
+                  className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                  value={bulkFilterTag}
+                  onChange={(e) => setBulkFilterTag(e.target.value)}
+                >
+                  <option value="">Todas as tags</option>
+                  {Array.from(new Set(media.map((m) => m.tag).filter(Boolean) as string[]))
+                    .sort()
+                    .map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                </select>
+              </div>
               <div className="border rounded-md max-h-64 overflow-auto">
-                {media.map((m) => {
+                {(bulkFilterTag ? media.filter((m) => m.tag === bulkFilterTag) : media).map((m) => {
                   const checked = bulkMediaIds.includes(m.id);
                   return (
                     <label
@@ -159,6 +250,7 @@ export default function JobsPage() {
                         onChange={() => toggleBulkMedia(m.id)}
                       />
                       <Badge variant={m.type === 'reel' ? 'default' : 'secondary'}>{m.type}</Badge>
+                      {m.tag && <Badge variant="outline" className="text-xs">{m.tag}</Badge>}
                       <span className="font-mono text-xs flex-1 truncate">{m.filePath}</span>
                       {m.caption && (
                         <span className="text-xs text-muted-foreground truncate max-w-xs">
@@ -175,6 +267,11 @@ export default function JobsPage() {
                 )}
               </div>
             </div>
+            {bulkAccountIds.length > 0 && bulkMediaIds.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Total: <strong>{bulkAccountIds.length} contas × {bulkMediaIds.length} mídias = {bulkAccountIds.length * bulkMediaIds.length} jobs</strong>
+              </p>
+            )}
             <div className="space-y-1">
               <Label>Distribuição</Label>
               <select
@@ -196,9 +293,11 @@ export default function JobsPage() {
               </Button>
               <Button
                 onClick={submitBulk}
-                disabled={bulkBusy || !bulkAccountId || bulkMediaIds.length === 0}
+                disabled={bulkBusy || bulkAccountIds.length === 0 || bulkMediaIds.length === 0}
               >
-                {bulkBusy ? 'Agendando...' : `Agendar ${bulkMediaIds.length} jobs`}
+                {bulkBusy
+                  ? 'Agendando...'
+                  : `Agendar ${bulkAccountIds.length * bulkMediaIds.length} jobs`}
               </Button>
             </div>
           </CardContent>

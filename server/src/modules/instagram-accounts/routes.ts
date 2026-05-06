@@ -37,6 +37,7 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
           displayName: parsed.data.displayName ?? null,
           bio: parsed.data.bio ?? null,
           websiteUrl: parsed.data.websiteUrl ?? null,
+          groupName: parsed.data.groupName ?? null,
           campaignId: parsed.data.campaignId ?? null,
           adsPowerProfileId: parsed.data.adsPowerProfileId ?? null,
         },
@@ -194,6 +195,7 @@ function serializeAccount(a: {
   displayName: string | null;
   bio: string | null;
   websiteUrl: string | null;
+  groupName: string | null;
   status: string;
   lastFailureAt: Date | null;
   consecutiveFails: number;
@@ -206,6 +208,7 @@ function serializeAccount(a: {
     displayName: a.displayName,
     bio: a.bio,
     websiteUrl: a.websiteUrl,
+    groupName: a.groupName,
     status: a.status as 'active' | 'paused' | 'needs_login' | 'error',
     lastFailureAt: a.lastFailureAt ? a.lastFailureAt.toISOString() : null,
     consecutiveFails: a.consecutiveFails,

@@ -67,6 +67,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       type: fields.type,
       caption: fields.caption ?? null,
       linkUrl: fields.linkUrl || null,
+      tag: fields.tag || null,
       campaignId: fields.campaignId,
     });
     if (!parsed.success) {
@@ -86,6 +87,7 @@ export async function mediaRoutes(app: FastifyInstance) {
         filePath: safeName,
         caption: parsed.data.caption ?? null,
         linkUrl: parsed.data.linkUrl ?? null,
+        tag: parsed.data.tag ?? null,
         campaignId: parsed.data.campaignId,
       },
       include: { campaign: true },
