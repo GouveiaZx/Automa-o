@@ -19,6 +19,10 @@ const schema = z.object({
   ADSPOWER_API_KEY: z.string().optional(),
   PLAYWRIGHT_HEADLESS: z.string().default('false'),
   PLAYWRIGHT_SLOW_MO_MS: z.coerce.number().int().nonnegative().default(0),
+  // Quando true, NAO fecha o navegador entre jobs (perfis ficam abertos).
+  // Trade-off: mais RAM (~300-500MB por perfil) vs nao precisa abrir/fechar AdsPower toda vez.
+  // Ao fechar a janela do worker, todos os perfis abertos sao fechados via SIGTERM handler.
+  KEEP_PROFILES_OPEN: z.coerce.boolean().default(false),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 });
 

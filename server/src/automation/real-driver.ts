@@ -104,16 +104,51 @@ async function dismissInfoModal(page: Page): Promise<void> {
  *  - { ok: false, reason: 'story_not_available' } se IG nao deu acesso (conta nova/sem permissao)
  *  - { ok: false, reason: '...' } com detalhes se foi outro erro
  */
+// User-Agent iPhone real (Safari iOS 17.5). Usado pra spoofar mobile e
+// destravar o criador de Story do IG, que so funciona em mobile web.
+const IPHONE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+
+async function applyMobileSpoof(page: Page): Promise<void> {
+  // Layer 1: HTTP headers
+  await page.context().setExtraHTTPHeaders({ 'User-Agent': IPHONE_UA }).catch(() => undefined);
+  // Layer 2: JS navigator (initScript aplica em todas as paginas futuras do contexto)
+  await page.context().addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'userAgent', { get: () => 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', configurable: true });
+      Object.defineProperty(navigator, 'platform', { get: () => 'iPhone', configurable: true });
+      Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5, configurable: true });
+      Object.defineProperty(navigator, 'vendor', { get: () => 'Apple Computer, Inc.', configurable: true });
+    } catch { /* ignore */ }
+  }).catch(() => undefined);
+  // Layer 3: viewport mobile
+  await page.setViewportSize({ width: 390, height: 844 }).catch(() => undefined);
+}
+
+async function revertMobileSpoof(page: Page): Promise<void> {
+  await page.context().setExtraHTTPHeaders({ 'User-Agent': DESKTOP_UA }).catch(() => undefined);
+  await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined);
+  // initScript fica injetado pra paginas FUTURAS — pra reverter o JS spoof,
+  // precisa criar contexto novo. Como perfil eh AdsPower (1 contexto), reload da pagina
+  // limpa o spoof JS aplicado nesta sessao.
+}
+
 async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
   const page = await getPage(args.adsPowerId);
   try {
-    await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined);
+    // Aplica spoof mobile (UA + viewport + JS navigator override)
+    await applyMobileSpoof(page);
     await page.goto('https://www.instagram.com/stories/create/', { waitUntil: 'domcontentloaded' });
     await humanDelay(2500, 4000);
 
     // Detectar se IG redirecionou (story create indisponivel)
     const finalUrl = page.url();
     if (!finalUrl.includes('/stories/create')) {
+      // Reverter spoof antes de retornar pro fallback do feed
+      await revertMobileSpoof(page);
       return { ok: false, reason: 'story_not_available' };
     }
 
@@ -222,6 +257,7 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
     const shareBtn = await findAny(page, shareSelectors, 8000);
     if (!shareBtn) {
       const dbg = await captureDebug(page, 'story-no-share');
+      await revertMobileSpoof(page);
       return { ok: false, reason: `story_no_share_button ${dbg.screenshot ?? ''}` };
     }
     await shareBtn.click({ timeout: 8000 });
@@ -253,6 +289,7 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
       const stillOnCreate = page.url().includes('/stories/create');
       if (stillOnCreate) {
         const dbg = await captureDebug(page, 'story-uncertain');
+        await revertMobileSpoof(page);
         return { ok: false, reason: `story_post_uncertain ${dbg.screenshot ?? ''}` };
       }
     }
@@ -262,9 +299,12 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
       level: 'info',
       message: `[real] story postado via web pra ${args.adsPowerId}`,
     });
+    // Reverte UA pra desktop pra proximos jobs (feed, bio) funcionarem normal
+    await revertMobileSpoof(page);
     return { ok: true };
   } catch (err) {
     const dbg = await captureDebug(page, 'story-error');
+    await revertMobileSpoof(page).catch(() => undefined);
     return {
       ok: false,
       reason: `${err instanceof Error ? err.message : 'unknown'} ${dbg.screenshot ?? ''}`,
@@ -316,7 +356,31 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         return { ok: false, reason: `upload_failed ${dbg.screenshot ?? ''}` };
       }
     }
-    await humanDelay(5000, 8000);
+    // Detecta se eh video (precisa esperar IG processar — pode demorar)
+    const isVideo = /\.(mp4|mov|webm|m4v|avi)$/i.test(args.filePath);
+
+    if (isVideo) {
+      // Pra video: espera o botao Avancar ficar ENABLED (IG bloqueia enquanto processa)
+      // Timeout 90s pra video grande. Se nao habilitar, fallback de delay extra.
+      try {
+        await page.waitForFunction(
+          () => {
+            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const advanceBtn = btns.find((b) => /^(Avançar|Next)$/i.test(b.textContent?.trim() || ''));
+            if (!advanceBtn) return false;
+            const disabled = (advanceBtn as HTMLButtonElement).disabled || advanceBtn.getAttribute('aria-disabled') === 'true';
+            return !disabled;
+          },
+          undefined,
+          { timeout: 90_000, polling: 1000 }
+        );
+      } catch {
+        // Botao nao habilitou — talvez fingerprint diferente. Da delay extra antes de tentar
+        await humanDelay(15000, 25000);
+      }
+    } else {
+      await humanDelay(5000, 8000);
+    }
 
     // Step 2.5: o IG abre modal informativo "Agora os posts de video sao compartilhados como reels"
     // (so pra videos). Precisa clicar OK pra prosseguir, senao trava na tela "Cortar".

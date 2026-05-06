@@ -19,7 +19,6 @@ export default function MediaPage() {
   const [type, setType] = useState<'story' | 'reel'>('reel');
   const [campaignId, setCampaignId] = useState('');
   const [caption, setCaption] = useState('');
-  const [linkUrl, setLinkUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,11 +48,9 @@ export default function MediaPage() {
       fd.append('type', type);
       fd.append('campaignId', campaignId);
       if (caption) fd.append('caption', caption);
-      if (linkUrl) fd.append('linkUrl', linkUrl);
       await api('/api/media', { method: 'POST', formData: fd });
       setFile(null);
       setCaption('');
-      setLinkUrl('');
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'erro');
@@ -115,17 +112,6 @@ export default function MediaPage() {
               <Label>{type === 'story' ? 'Texto/legenda do Story' : 'Caption do Reel'}</Label>
               <Textarea value={caption} onChange={(e) => setCaption(e.target.value)} rows={2} />
             </div>
-            {type === 'story' && (
-              <div className="space-y-1 md:col-span-2">
-                <Label>Link do Story (sticker)</Label>
-                <Input
-                  type="url"
-                  value={linkUrl}
-                  onChange={(e) => setLinkUrl(e.target.value)}
-                  placeholder="https://link.bioexclusiva.com/b/secretinha"
-                />
-              </div>
-            )}
             <div className="space-y-1 md:col-span-2">
               <Label>Arquivo</Label>
               <Input
@@ -179,16 +165,6 @@ export default function MediaPage() {
                   </TableCell>
                   <TableCell className="max-w-xs truncate">
                     <div>{m.caption ?? '—'}</div>
-                    {m.linkUrl && (
-                      <a
-                        href={m.linkUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-blue-400 hover:underline"
-                      >
-                        🔗 {m.linkUrl}
-                      </a>
-                    )}
                   </TableCell>
                   <TableCell>{m.usedCount}</TableCell>
                   <TableCell>{formatDateTime(m.publishedAt)}</TableCell>

@@ -24,7 +24,7 @@ export default function AccountsPage() {
   const [items, setItems] = useState<InstagramAccount[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [profiles, setProfiles] = useState<AdsPowerProfile[]>([]);
-  const [form, setForm] = useState({ username: '', displayName: '', bio: '', websiteUrl: '', campaignId: '', adsPowerProfileId: '' });
+  const [form, setForm] = useState({ username: '', displayName: '', bio: '', campaignId: '', adsPowerProfileId: '' });
   const [error, setError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
 
@@ -57,12 +57,11 @@ export default function AccountsPage() {
           username: form.username,
           displayName: form.displayName || null,
           bio: form.bio || null,
-          websiteUrl: form.websiteUrl || null,
           campaignId: form.campaignId || null,
           adsPowerProfileId: form.adsPowerProfileId || null,
         },
       });
-      setForm({ username: '', displayName: '', bio: '', websiteUrl: '', campaignId: '', adsPowerProfileId: '' });
+      setForm({ username: '', displayName: '', bio: '', campaignId: '', adsPowerProfileId: '' });
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'erro');
@@ -140,18 +139,6 @@ export default function AccountsPage() {
                 placeholder="Texto da bio do perfil IG"
               />
             </div>
-            <div className="space-y-1 md:col-span-2">
-              <Label>Site (link clicável da bio)</Label>
-              <Input
-                type="url"
-                value={form.websiteUrl}
-                onChange={(e) => setForm({ ...form, websiteUrl: e.target.value })}
-                placeholder="https://link.bioexclusiva.com/b/secretinha"
-              />
-              <p className="text-xs text-muted-foreground">
-                Aparece como link clicável no perfil IG (campo &quot;Site&quot;).
-              </p>
-            </div>
             <div className="space-y-1">
               <Label>Campanha</Label>
               <select
@@ -219,11 +206,6 @@ export default function AccountsPage() {
                         {a.bio}
                       </div>
                     )}
-                    {a.websiteUrl && (
-                      <div className="text-xs text-blue-400 max-w-xs truncate">
-                        🔗 {a.websiteUrl}
-                      </div>
-                    )}
                   </TableCell>
                   <TableCell>{a.campaign?.name ?? '—'}</TableCell>
                   <TableCell>{a.adsPowerProfile?.name ?? '—'}</TableCell>
@@ -235,8 +217,8 @@ export default function AccountsPage() {
                     <Button
                       size="icon"
                       variant="ghost"
-                      title="Sincronizar bio + site no IG"
-                      disabled={syncingId === a.id || (!a.bio && !a.websiteUrl) || !a.adsPowerProfileId}
+                      title="Sincronizar bio no IG"
+                      disabled={syncingId === a.id || !a.bio || !a.adsPowerProfileId}
                       onClick={() => syncBio(a.id, a.username)}
                     >
                       {syncingId === a.id ? (

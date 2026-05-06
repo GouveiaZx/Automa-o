@@ -86,7 +86,9 @@ export async function processJob(jobId: string): Promise<void> {
             caption: job.media.caption,
           });
 
-    await driver.closeProfile(adsId).catch(() => undefined);
+    if (!env.KEEP_PROFILES_OPEN) {
+      await driver.closeProfile(adsId).catch(() => undefined);
+    }
 
     if (!result.ok) throw new Error(result.reason ?? 'post_failed');
 
@@ -123,6 +125,8 @@ export async function processJob(jobId: string): Promise<void> {
       })
     );
   } catch (err) {
+    // Em erro: fecha perfil pra evitar sessao zumbi/inconsistente, mesmo com KEEP_PROFILES_OPEN.
+    // Proximo job que precisar do mesmo adsPowerId vai abrir um perfil limpo.
     await driver.closeProfile(adsId).catch(() => undefined);
     const reason = err instanceof Error ? err.message : 'unknown_error';
     await onFailure(job.id, reason, job.attempts, job.accountId);
