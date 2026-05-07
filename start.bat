@@ -35,13 +35,15 @@ echo [3/3] Subindo 3 processos (server, worker, client)...
 echo Cada um abrira em uma janela separada. NAO feche durante a operacao.
 echo.
 
-start "Instagram Automation - SERVER" cmd /k "cd server && npx tsx --env-file=.env src/server.ts"
+REM Usa "start /D <pasta>" pra setar o working directory diretamente da janela nova.
+REM Defesa contra path com espacos/acentos: o /D recebe o path absoluto do .bat (%~dp0).
+start "Instagram Automation - SERVER" /D "%~dp0server" cmd /k "npx tsx --env-file=.env src/server.ts"
 timeout /t 3 /nobreak >nul
 
-start "Instagram Automation - WORKER" cmd /k "cd server && npx tsx --env-file=.env src/worker.ts"
+start "Instagram Automation - WORKER" /D "%~dp0server" cmd /k "npx tsx --env-file=.env src/worker.ts"
 timeout /t 2 /nobreak >nul
 
-start "Instagram Automation - CLIENT" cmd /k "cd client && npm run dev"
+start "Instagram Automation - CLIENT" /D "%~dp0client" cmd /k "npm run dev"
 
 echo.
 echo ========================================

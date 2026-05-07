@@ -61,6 +61,11 @@ async function main() {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // Windows: quando usuario clica X na janela do worker, Node mapeia
+  // CTRL_CLOSE_EVENT pra SIGHUP. Sem esse handler, perfis AdsPower abertos
+  // ficam zumbi consumindo RAM ate reboot. SIGBREAK eh CTRL+BREAK no Windows.
+  process.on('SIGHUP', shutdown);
+  process.on('SIGBREAK', shutdown);
 }
 
 main().catch((err) => {

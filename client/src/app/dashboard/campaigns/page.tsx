@@ -114,6 +114,8 @@ export default function CampaignsPage() {
               <Field label="Intervalo mín (min)">
                 <Input
                   type="number"
+                  min={1}
+                  max={1440}
                   value={form.minIntervalMin}
                   onChange={(e) => setForm({ ...form, minIntervalMin: Number(e.target.value) })}
                 />
@@ -121,6 +123,8 @@ export default function CampaignsPage() {
               <Field label="Intervalo máx (min)">
                 <Input
                   type="number"
+                  min={1}
+                  max={1440}
                   value={form.maxIntervalMin}
                   onChange={(e) => setForm({ ...form, maxIntervalMin: Number(e.target.value) })}
                 />
@@ -130,6 +134,8 @@ export default function CampaignsPage() {
               <Field label="Stories/dia">
                 <Input
                   type="number"
+                  min={0}
+                  max={100}
                   value={form.storiesPerDay}
                   onChange={(e) => setForm({ ...form, storiesPerDay: Number(e.target.value) })}
                 />
@@ -137,6 +143,8 @@ export default function CampaignsPage() {
               <Field label="Reels/dia">
                 <Input
                   type="number"
+                  min={0}
+                  max={100}
                   value={form.reelsPerDay}
                   onChange={(e) => setForm({ ...form, reelsPerDay: Number(e.target.value) })}
                 />

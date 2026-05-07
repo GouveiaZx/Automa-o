@@ -26,23 +26,37 @@ export async function sseRoutes(app: FastifyInstance) {
     });
     reply.raw.write(`: connected\n\n`);
 
-    const off = bus.onEvent((event) => {
-      reply.raw.write(`event: ${event.type}\n`);
-      reply.raw.write(`data: ${JSON.stringify(event.payload)}\n\n`);
+    let cleaned = false;
+    let off: (() => void) | null = null;
+    let heartbeat: NodeJS.Timeout | null = null;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (heartbeat) clearInterval(heartbeat);
+      if (off) off();
+    };
+
+    off = bus.onEvent((event) => {
+      // Se write falhar (conexao caiu mid-write), limpa listener pra nao acumular.
+      // Sem isso, listeners ficavam grudados ate atingir setMaxListeners(50) e logar warning.
+      try {
+        reply.raw.write(`event: ${event.type}\n`);
+        reply.raw.write(`data: ${JSON.stringify(event.payload)}\n\n`);
+      } catch {
+        cleanup();
+      }
     });
 
-    const heartbeat = setInterval(() => {
+    heartbeat = setInterval(() => {
       try {
         reply.raw.write(`: ping\n\n`);
       } catch {
-        /* ignore */
+        cleanup();
       }
     }, 25000);
 
-    req.raw.on('close', () => {
-      clearInterval(heartbeat);
-      off();
-    });
+    req.raw.on('close', cleanup);
+    req.raw.on('error', cleanup);
 
     return reply;
   });

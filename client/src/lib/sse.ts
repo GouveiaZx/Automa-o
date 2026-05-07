@@ -1,7 +1,7 @@
 'use client';
 
 import type { SseEvent } from '@automacao/shared';
-import { apiBaseUrl, getToken } from './api';
+import { apiBaseUrl, getToken, clearToken } from './api';
 
 export type SseListener = (event: SseEvent) => void;
 
@@ -38,10 +38,11 @@ export function connectSse(onEvent: SseListener): () => void {
     }
     errorBurst++;
     if (errorBurst >= 5 && es.readyState === EventSource.CLOSED) {
-      // Sessao provavelmente expirou — limpa token e manda pro login
-      try {
-        localStorage.removeItem('jwt');
-      } catch {}
+      // Sessao provavelmente expirou — limpa token e manda pro login.
+      // IMPORTANTE: usar clearToken() pra acertar a chave (auth_token).
+      // Antes usava removeItem('jwt') que era chave errada → token velho ficava
+      // grudado e o usuario via "Worker NAO respondendo" (era so SSE caido).
+      clearToken();
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';
       }
