@@ -508,26 +508,41 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     //   - Foto: Cortar -> Filtros -> Caption (2 cliques)
     //   - Video: Cortar -> Editar (cover/trim) -> Filtros -> Caption (3 cliques)
     //   - As vezes pula Filtros (1-2 cliques)
-    // Em vez de fixed 2 cliques, loop ate detectar caption visivel
-    // (sinal que ja chegou na tela final). Max 5 tentativas pra evitar loop
-    // infinito caso IG quebre o fluxo.
+    // Em vez de fixed 2 cliques, loop ate detectar tela de Caption (campo
+    // de legenda + botao Compartilhar visiveis simultaneamente — co-presenca
+    // pra evitar false-positive em telas intermediarias). Max 5 tentativas.
     const captionSelectors =
       'div[contenteditable="true"][aria-label*="legenda" i],' +
       'div[contenteditable="true"][aria-label*="caption" i],' +
       'textarea[aria-label*="legenda" i],' +
       'textarea[aria-label*="caption" i]';
+    const shareTextSelector =
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Compartilhar"),' +
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Share"),' +
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Publicar"),' +
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Post")';
+
+    const isOnCaptionScreen = async () => {
+      const captionField = await page
+        .locator(captionSelectors)
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false);
+      if (!captionField) return false;
+      const shareVisible = await page
+        .locator(shareTextSelector)
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false);
+      return shareVisible;
+    };
 
     let advanceClicks = 0;
     for (let attempt = 0; attempt < 5; attempt++) {
       await dismissInfoModal(page);
 
-      // Sai do loop quando ja chegou na tela de Caption
-      const captionVisible = await page
-        .locator(captionSelectors)
-        .first()
-        .isVisible({ timeout: 500 })
-        .catch(() => false);
-      if (captionVisible) break;
+      // Sai do loop quando chegou na tela de Caption (caption + share visiveis)
+      if (await isOnCaptionScreen()) break;
 
       const ok = await clickAdvance(attempt === 0 ? 12_000 : 6_000);
       if (!ok) {
@@ -587,38 +602,61 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     }
     await humanDelay(800, 1500);
 
-    // Step 6: Click "Compartilhar" (com fallbacks pra IG trocar label)
-    let shareClicked = false;
+    // Step 6: Click "Compartilhar" (com fallbacks pra IG trocar label).
+    // Cobre 4 labels (PT/EN: Compartilhar, Share, Publicar, Post) em 4
+    // tipos de elemento (button, [role=button], <a>, <div> folha).
     const shareSelectors = [
-      'div[role="dialog"] div[role="button"]:has-text("Compartilhar")',
-      'div[role="dialog"] div[role="button"]:has-text("Share")',
-      'div[role="dialog"] div[role="button"]:has-text("Publicar")',
-      'div[role="dialog"] div[role="button"]:has-text("Post")',
+      // [role=button] (mais comum no IG novo)
+      'div[role="dialog"] [role="button"]:has-text("Compartilhar")',
+      'div[role="dialog"] [role="button"]:has-text("Share")',
+      'div[role="dialog"] [role="button"]:has-text("Publicar")',
+      'div[role="dialog"] [role="button"]:has-text("Post")',
+      // <button> nativo
       'div[role="dialog"] button:has-text("Compartilhar")',
       'div[role="dialog"] button:has-text("Share")',
       'div[role="dialog"] button:has-text("Publicar")',
       'div[role="dialog"] button:has-text("Post")',
+      // <a> (algumas versoes)
+      'div[role="dialog"] a:has-text("Compartilhar")',
+      'div[role="dialog"] a:has-text("Share")',
+      'div[role="dialog"] a:has-text("Publicar")',
+      'div[role="dialog"] a:has-text("Post")',
+      // <div> folha (sem filhos) — fallback de elemento generico clickable
+      'div[role="dialog"] div:has-text("Compartilhar"):not(:has(*))',
+      'div[role="dialog"] div:has-text("Share"):not(:has(*))',
+      'div[role="dialog"] div:has-text("Publicar"):not(:has(*))',
+      'div[role="dialog"] div:has-text("Post"):not(:has(*))',
     ];
-    try {
-      const shareBtn = await findAny(page, shareSelectors, 8000);
-      if (shareBtn) {
-        await shareBtn.click({ timeout: 10000 });
-        shareClicked = true;
-      } else {
-        // ultimo fallback: getByRole com regex ampla
-        await page
-          .getByRole('button', { name: /^(Compartilhar|Share|Publicar|Post|Enviar)$/i })
-          .first()
-          .click({ timeout: 8000 });
-        shareClicked = true;
-      }
-    } catch {
+
+    // Auto-recovery: se Step 6 nao achar Compartilhar, eh provavel que
+    // ainda esta numa tela intermediaria (Filtros/Editar). Tenta mais 1
+    // Avancar e re-tenta. So 1 retry pra nao loop infinito.
+    let shareBtn = await findAny(page, shareSelectors, 8000);
+    if (!shareBtn) {
+      await dismissInfoModal(page);
+      await clickAdvance(4000);
+      await humanDelay(2000, 3000);
+      shareBtn = await findAny(page, shareSelectors, 6000);
+    }
+    if (!shareBtn) {
+      // Ultimo fallback: getByRole com regex ampla (pega elementos sem
+      // texto exato mas com aria-label "Compartilhar")
+      shareBtn = await page
+        .getByRole('button', { name: /^(Compartilhar|Share|Publicar|Post|Enviar)$/i })
+        .first()
+        .isVisible({ timeout: 1000 })
+        .then((v) => (v ? page.getByRole('button', { name: /^(Compartilhar|Share|Publicar|Post|Enviar)$/i }).first() : null))
+        .catch(() => null);
+    }
+    if (!shareBtn) {
       const dbg = await captureDebug(page, 'no-share-btn');
       return { ok: false, reason: `share_button_not_found ${dbg.screenshot ?? ''}` };
     }
-    if (!shareClicked) {
-      const dbg = await captureDebug(page, 'no-share-btn');
-      return { ok: false, reason: `share_button_not_clicked ${dbg.screenshot ?? ''}` };
+    try {
+      await shareBtn.click({ timeout: 10000 });
+    } catch {
+      const dbg = await captureDebug(page, 'share-click-fail');
+      return { ok: false, reason: `share_button_click_failed ${dbg.screenshot ?? ''}` };
     }
 
     // Step 6.5: APOS clicar Compartilhar o IG pode mostrar popup informativo
