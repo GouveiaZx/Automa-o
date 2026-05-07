@@ -475,15 +475,34 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // (so pra videos). Precisa clicar OK pra prosseguir, senao trava na tela "Cortar".
     await dismissInfoModal(page);
 
+    // Helper: tenta clicar Avançar/Next cobrindo button, [role=button], <a> e <div> clickable.
+    // Em algumas telas (ex: Edit/Filters pra foto) o IG renderiza esse botao como <div>
+    // ou <a> sem role explicito de button, e getByRole('button') nao match.
+    const clickAdvance = async (timeoutMs: number) => {
+      const btn = await findAny(
+        page,
+        [
+          'div[role="dialog"] button:has-text("Avançar")',
+          'div[role="dialog"] button:has-text("Next")',
+          'div[role="dialog"] [role="button"]:has-text("Avançar")',
+          'div[role="dialog"] [role="button"]:has-text("Next")',
+          'div[role="dialog"] a:has-text("Avançar")',
+          'div[role="dialog"] a:has-text("Next")',
+          'div[role="dialog"] div:has-text("Avançar"):not(:has(*))',
+          'div[role="dialog"] div:has-text("Next"):not(:has(*))',
+        ],
+        timeoutMs
+      );
+      if (!btn) return false;
+      await btn.click({ timeout: 5000 }).catch(() => undefined);
+      return true;
+    };
+
     // Step 3: tela "Cortar" → click "Avançar"
-    try {
-      await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 12000 });
-    } catch {
+    if (!(await clickAdvance(12000))) {
       // Tenta de novo apos fechar qualquer modal residual
       await dismissInfoModal(page);
-      try {
-        await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 6000 });
-      } catch {
+      if (!(await clickAdvance(6000))) {
         const dbg = await captureDebug(page, 'no-advance-1');
         return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
       }
@@ -495,13 +514,9 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     await dismissInfoModal(page);
 
     // Step 4: tela "Editar" (filtros) → click "Avançar"
-    try {
-      await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 12000 });
-    } catch {
+    if (!(await clickAdvance(12000))) {
       await dismissInfoModal(page);
-      try {
-        await page.getByRole('button', { name: /^Avançar$|^Next$/i }).first().click({ timeout: 6000 });
-      } catch {
+      if (!(await clickAdvance(6000))) {
         const dbg = await captureDebug(page, 'no-advance-2');
         return { ok: false, reason: `no_advance_after_filters ${dbg.screenshot ?? ''}` };
       }
