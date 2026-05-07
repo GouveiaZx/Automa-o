@@ -3,6 +3,7 @@ import { scheduleJobSchema, scheduleBulkSchema, scheduleBulkMultiSchema } from '
 import { prisma } from '../../prisma.js';
 import { bus } from '../../events.js';
 import { appLog } from '../../logger.js';
+import { nextSlots } from '../../automation/scheduler.js';
 
 export async function jobRoutes(app: FastifyInstance) {
   app.addHook('preHandler', app.authenticate);
@@ -97,35 +98,55 @@ export async function jobRoutes(app: FastifyInstance) {
     }
 
     const now = Date.now();
-    const windowMs = (() => {
-      switch (parsed.data.spreadOver) {
-        case 'now':
-          return 0;
-        case 'hour':
-          return 60 * 60 * 1000;
-        case '24h':
-          return 24 * 60 * 60 * 1000;
-        case 'today':
-        default: {
-          const end = new Date();
-          end.setHours(23, 59, 0, 0);
-          return Math.max(end.getTime() - now, 60 * 60 * 1000);
-        }
-      }
-    })();
-
-    const slots = medias.length;
     const created = [];
-    for (let i = 0; i < slots; i++) {
-      const offset = slots === 1 ? 0 : (windowMs / slots) * i;
-      const scheduledFor = new Date(now + offset);
+
+    // Modo "campaign": usa fixedTimes/intervalo da propria campanha pra distribuir.
+    // Se a conta nao tem campanha, cai pro fallback de janela 'today'.
+    const useCampaign = parsed.data.spreadOver === 'campaign' && account.campaign;
+    const slotDates = useCampaign
+      ? nextSlots(
+          {
+            minIntervalMin: account.campaign!.minIntervalMin,
+            maxIntervalMin: account.campaign!.maxIntervalMin,
+            windowStart: account.campaign!.windowStart,
+            windowEnd: account.campaign!.windowEnd,
+            fixedTimes: account.campaign!.fixedTimes,
+          },
+          medias.length,
+          new Date(now)
+        )
+      : (() => {
+          const windowMs = (() => {
+            switch (parsed.data.spreadOver) {
+              case 'now':
+                return 0;
+              case 'hour':
+                return 60 * 60 * 1000;
+              case '24h':
+                return 24 * 60 * 60 * 1000;
+              case 'today':
+              case 'campaign':
+              default: {
+                const end = new Date();
+                end.setHours(23, 59, 0, 0);
+                return Math.max(end.getTime() - now, 60 * 60 * 1000);
+              }
+            }
+          })();
+          return medias.map((_, i) => {
+            const offset = medias.length === 1 ? 0 : (windowMs / medias.length) * i;
+            return new Date(now + offset);
+          });
+        })();
+
+    for (let i = 0; i < medias.length; i++) {
       const job = await prisma.postJob.create({
         data: {
           accountId: account.id,
           mediaId: medias[i].id,
           type: medias[i].type,
           status: 'queued',
-          scheduledFor,
+          scheduledFor: slotDates[i],
         },
         include: { account: true, media: true },
       });
@@ -150,7 +171,7 @@ export async function jobRoutes(app: FastifyInstance) {
     }
     const accounts = await prisma.instagramAccount.findMany({
       where: { id: { in: parsed.data.accountIds } },
-      include: { adsPowerProfile: true },
+      include: { adsPowerProfile: true, campaign: true },
     });
     if (accounts.length !== parsed.data.accountIds.length) {
       return reply.status(404).send({ error: 'some_account_not_found' });
@@ -180,6 +201,7 @@ export async function jobRoutes(app: FastifyInstance) {
         case '24h':
           return 24 * 60 * 60 * 1000;
         case 'today':
+        case 'campaign':
         default: {
           const end = new Date();
           end.setHours(23, 59, 0, 0);
@@ -190,19 +212,36 @@ export async function jobRoutes(app: FastifyInstance) {
 
     let totalCreated = 0;
     for (const account of accounts) {
-      const slots = medias.length;
-      for (let i = 0; i < slots; i++) {
-        const offset = slots === 1 ? 0 : (windowMs / slots) * i;
-        // Adiciona pequeno desvio aleatorio entre contas pra nao postar todas no mesmo segundo
-        const accountJitter = Math.floor(Math.random() * 60_000); // ate 60s
-        const scheduledFor = new Date(now + offset + accountJitter);
+      // Modo "campaign": cada conta usa fixedTimes da SUA campanha. Se conta nao tem campanha,
+      // cai pra janela 'today'. Cada conta tem seus proprios slots.
+      const useCampaign = parsed.data.spreadOver === 'campaign' && account.campaign;
+      const slotDates = useCampaign
+        ? nextSlots(
+            {
+              minIntervalMin: account.campaign!.minIntervalMin,
+              maxIntervalMin: account.campaign!.maxIntervalMin,
+              windowStart: account.campaign!.windowStart,
+              windowEnd: account.campaign!.windowEnd,
+              fixedTimes: account.campaign!.fixedTimes,
+            },
+            medias.length,
+            new Date(now)
+          )
+        : medias.map((_, i) => {
+            const offset = medias.length === 1 ? 0 : (windowMs / medias.length) * i;
+            // Jitter pra nao postar todas no mesmo segundo entre contas
+            const accountJitter = Math.floor(Math.random() * 60_000);
+            return new Date(now + offset + accountJitter);
+          });
+
+      for (let i = 0; i < medias.length; i++) {
         const job = await prisma.postJob.create({
           data: {
             accountId: account.id,
             mediaId: medias[i].id,
             type: medias[i].type,
             status: 'queued',
-            scheduledFor,
+            scheduledFor: slotDates[i],
           },
           include: { account: true, media: true },
         });

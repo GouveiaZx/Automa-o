@@ -13,7 +13,7 @@ import type { Campaign, InstagramAccount, MediaItem } from '@automacao/shared';
 import { formatDateTime } from '@/lib/utils';
 import { Trash2, Upload } from 'lucide-react';
 
-const MAX_FILES_PER_BATCH = 10;
+const MAX_FILES_PER_BATCH = 50;
 
 export default function MediaPage() {
   const [items, setItems] = useState<MediaItem[]>([]);

@@ -77,7 +77,7 @@ export async function scheduleNextForAccount(accountId: string): Promise<void> {
  * - Se fixedTimes setado (ex: "00:00,03:00,06:00,12:00,18:00"), usa esses horarios
  * - Caso contrario, usa intervalo aleatorio min/max dentro da janela
  */
-function nextSlots(
+export function nextSlots(
   campaign: {
     minIntervalMin: number;
     maxIntervalMin: number;

@@ -89,7 +89,7 @@ export type ScheduleJobInput = z.infer<typeof scheduleJobSchema>;
 export const scheduleBulkSchema = z.object({
   accountId: z.string().min(1),
   mediaIds: z.array(z.string().min(1)).min(1).max(50),
-  spreadOver: z.enum(['now', 'hour', 'today', '24h']).default('today'),
+  spreadOver: z.enum(['now', 'hour', 'today', '24h', 'campaign']).default('today'),
 });
 export type ScheduleBulkInput = z.infer<typeof scheduleBulkSchema>;
 
@@ -98,7 +98,7 @@ export type ScheduleBulkInput = z.infer<typeof scheduleBulkSchema>;
 export const scheduleBulkMultiSchema = z.object({
   accountIds: z.array(z.string().min(1)).min(1).max(50),
   mediaIds: z.array(z.string().min(1)).min(1).max(50),
-  spreadOver: z.enum(['now', 'hour', 'today', '24h']).default('today'),
+  spreadOver: z.enum(['now', 'hour', 'today', '24h', 'campaign']).default('today'),
 });
 export type ScheduleBulkMultiInput = z.infer<typeof scheduleBulkMultiSchema>;
 

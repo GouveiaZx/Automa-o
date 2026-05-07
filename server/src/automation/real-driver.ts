@@ -79,15 +79,17 @@ async function getPage(adsPowerId: string): Promise<Page> {
 async function dismissInfoModal(page: Page): Promise<void> {
   // Tenta varios labels comuns em ambos: <button> e <div role=button>.
   // IG moderno usa role=button em divs. Timeout curto pra nao demorar quando nao tem modal.
+  // CRITICO: nao incluir "Compartilhar", "Share", "Avançar", "Next" aqui — esses sao
+  // botoes de acao primaria do fluxo (cada Step clica eles na hora certa).
+  // Se incluidos, o dismissInfoModal cascateia pelas telas (Cortar→Filtros→Caption→Sharing)
+  // e quebra o fluxo, gerando no_advance_after_upload com screenshot da Sharing.
   const labels = [
     'OK', 'Ok',
     'Entendi', 'Got it',
     'Continuar', 'Continue',
-    'Compartilhar', 'Share',
     'Permitir', 'Allow',
     'Sim', 'Yes',
     'Concluir', 'Done', 'Concluído', 'Concluido',
-    'Avançar', 'Next',
   ];
   // Gera selectors pra cada label em ambos formatos
   const okSelectors: string[] = [];

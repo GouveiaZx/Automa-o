@@ -15,18 +15,25 @@ echo.
 pause
 
 echo.
-echo [1/5] Matando processos node antigos pra liberar arquivos...
+echo [1/6] Matando processos node antigos pra liberar arquivos...
 REM Mata todos node.exe pra evitar EPERM no prisma generate (query_engine.dll travado)
 powershell -NoProfile -Command "Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>nul
 timeout /t 2 /nobreak >nul
 
 echo.
-echo [2/5] Puxando nova versao do GitHub...
-git pull origin main
+echo [2/6] Puxando nova versao do GitHub...
+REM Defesa: se git pull der conflito (ex: update.bat local modificado por RESOLVER),
+REM faz reset --hard pra forcar atualizacao. PC do cliente nao tem mudancas locais
+REM que precise preservar — qualquer divergencia local eh lixo de instalacao anterior.
+git fetch origin main
 if errorlevel 1 (
-    echo [AVISO] git pull falhou. Pode ser conflito local.
-    echo Se voce nao mudou nada manualmente, rode:
-    echo   git reset --hard origin/main
+    echo [ERRO] git fetch falhou. Sem internet ou repo travado. Me chama pelo Workana.
+    pause
+    exit /b 1
+)
+git reset --hard origin/main
+if errorlevel 1 (
+    echo [ERRO] git reset falhou. Me chama pelo Workana.
     pause
     exit /b 1
 )

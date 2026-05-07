@@ -37,7 +37,7 @@ export default function JobsPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkAccountIds, setBulkAccountIds] = useState<string[]>([]);
   const [bulkMediaIds, setBulkMediaIds] = useState<string[]>([]);
-  const [bulkSpread, setBulkSpread] = useState<'now' | 'hour' | 'today' | '24h'>('today');
+  const [bulkSpread, setBulkSpread] = useState<'now' | 'hour' | 'today' | '24h' | 'campaign'>('today');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkFilterGroup, setBulkFilterGroup] = useState<string>('');
   const [bulkFilterTag, setBulkFilterTag] = useState<string>('');
@@ -223,18 +223,43 @@ export default function JobsPage() {
             <div className="space-y-1">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <Label>Mídias ({bulkMediaIds.length} selecionadas)</Label>
-                <select
-                  className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-                  value={bulkFilterTag}
-                  onChange={(e) => setBulkFilterTag(e.target.value)}
-                >
-                  <option value="">Todas as tags</option>
-                  {Array.from(new Set(media.map((m) => m.tag).filter(Boolean) as string[]))
-                    .sort()
-                    .map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                </select>
+                <div className="flex gap-2 items-center">
+                  <select
+                    className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                    value={bulkFilterTag}
+                    onChange={(e) => setBulkFilterTag(e.target.value)}
+                  >
+                    <option value="">Todas as tags</option>
+                    {Array.from(new Set(media.map((m) => m.tag).filter(Boolean) as string[]))
+                      .sort()
+                      .map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={() => {
+                      const filtered = bulkFilterTag
+                        ? media.filter((m) => m.tag === bulkFilterTag)
+                        : media;
+                      const allIds = filtered.map((m) => m.id);
+                      const allSelected = allIds.length > 0 && allIds.every((id) => bulkMediaIds.includes(id));
+                      if (allSelected) {
+                        setBulkMediaIds((prev) => prev.filter((id) => !allIds.includes(id)));
+                      } else {
+                        setBulkMediaIds((prev) => Array.from(new Set([...prev, ...allIds])));
+                      }
+                    }}
+                  >
+                    {(() => {
+                      const filtered = bulkFilterTag ? media.filter((m) => m.tag === bulkFilterTag) : media;
+                      const allIds = filtered.map((m) => m.id);
+                      const allSelected = allIds.length > 0 && allIds.every((id) => bulkMediaIds.includes(id));
+                      return allSelected ? 'Desmarcar todas' : 'Marcar todas';
+                    })()}
+                  </button>
+                </div>
               </div>
               <div className="border rounded-md max-h-64 overflow-auto">
                 {(bulkFilterTag ? media.filter((m) => m.tag === bulkFilterTag) : media).map((m) => {
@@ -278,13 +303,14 @@ export default function JobsPage() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
                 value={bulkSpread}
                 onChange={(e) =>
-                  setBulkSpread(e.target.value as 'now' | 'hour' | 'today' | '24h')
+                  setBulkSpread(e.target.value as 'now' | 'hour' | 'today' | '24h' | 'campaign')
                 }
               >
                 <option value="now">Agora (todos imediatos)</option>
                 <option value="hour">Espalhar pela próxima 1 hora</option>
                 <option value="today">Espalhar até o final do dia</option>
                 <option value="24h">Espalhar pelas próximas 24 horas</option>
+                <option value="campaign">Horários fixos da campanha (usa o que tá na campanha de cada conta)</option>
               </select>
             </div>
             <div className="flex justify-end gap-2">
