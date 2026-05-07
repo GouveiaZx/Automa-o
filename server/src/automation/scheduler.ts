@@ -98,8 +98,10 @@ export function nextSlots(
       .filter((t) => /^\d{2}:\d{2}$/.test(t));
     if (times.length > 0) {
       // Distribui count nos horarios fixos. Se count > times.length,
-      // gera N posts por horario (offset de 1 min entre eles).
-      // Ex: count=30, times=5 → 6 posts por slot (00:00, 00:01, ... 00:05)
+      // gera N posts por horario com offset de FIXED_TIME_OFFSET_MIN minutos
+      // entre eles (default 3 min — mais natural, evita parecer spam).
+      // Ex: count=30, times=5 → 6 posts por slot (00:00, 00:03, 00:06, 00:09, 00:12, 00:15)
+      const FIXED_TIME_OFFSET_MIN = 3;
       const postsPerSlot = Math.max(1, Math.ceil(count / times.length));
       const sortedTimes = [...times].sort();
       let cursor = new Date(lastScheduled);
@@ -110,7 +112,7 @@ export function nextSlots(
           const base = timeOnDate(t, cursor);
           for (let i = 0; i < postsPerSlot; i++) {
             if (slots.length >= count) break;
-            const slot = new Date(base.getTime() + i * 60 * 1000);
+            const slot = new Date(base.getTime() + i * FIXED_TIME_OFFSET_MIN * 60 * 1000);
             if (slot > lastScheduled) {
               slots.push(slot);
             }
