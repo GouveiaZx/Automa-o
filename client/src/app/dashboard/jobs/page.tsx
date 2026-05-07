@@ -84,6 +84,15 @@ export default function JobsPage() {
     load();
   }
 
+  async function clearDone() {
+    const doneCount = jobs.filter((j) => j.status === 'done').length;
+    if (doneCount === 0) return;
+    if (!confirm(`Apagar ${doneCount} job${doneCount > 1 ? 's' : ''} concluido${doneCount > 1 ? 's' : ''}?`)) return;
+    const r = await api<{ count: number }>('/api/jobs?status=done', { method: 'DELETE' });
+    alert(`${r.count} job(s) apagado(s)`);
+    load();
+  }
+
   async function submitBulk() {
     if (bulkAccountIds.length === 0 || bulkMediaIds.length === 0) return;
     setBulkBusy(true);
@@ -382,7 +391,14 @@ export default function JobsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Jobs</CardTitle>
+          <CardTitle className="flex items-center justify-between gap-2">
+            <span>Jobs</span>
+            {jobs.some((j) => j.status === 'done') && (
+              <Button size="sm" variant="outline" onClick={clearDone}>
+                <Trash2 className="h-4 w-4" /> Limpar concluidos ({jobs.filter((j) => j.status === 'done').length})
+              </Button>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <Table>

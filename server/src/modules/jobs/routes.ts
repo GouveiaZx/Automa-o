@@ -308,6 +308,24 @@ export async function jobRoutes(app: FastifyInstance) {
     await prisma.postJob.delete({ where: { id } });
     return { ok: true };
   });
+
+  // Apaga em lote jobs com status especifico (default: done).
+  // Util pra limpar fila de concluidos sem precisar deletar 1 por 1.
+  app.delete('/jobs', async (req) => {
+    const q = req.query as { status?: string };
+    const status = q.status ?? 'done';
+    // Por seguranca, nunca apaga jobs running em batch.
+    if (status === 'running') {
+      return { count: 0, error: 'cannot_bulk_delete_running' };
+    }
+    const result = await prisma.postJob.deleteMany({ where: { status } });
+    await appLog({
+      source: 'api',
+      level: 'info',
+      message: `Bulk delete: ${result.count} job(s) com status=${status} apagado(s)`,
+    });
+    return { count: result.count };
+  });
 }
 
 function serializeJob(j: {
