@@ -494,8 +494,14 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         timeoutMs
       );
       if (!btn) return false;
-      await btn.click({ timeout: 5000 }).catch(() => undefined);
-      return true;
+      // Propaga falha do click — se overlay bloqueou ou btn nao clicavel,
+      // o caller pode tentar dismissInfoModal + retry.
+      try {
+        await btn.click({ timeout: 5000 });
+        return true;
+      } catch {
+        return false;
+      }
     };
 
     // Step 3-4: loop adaptativo de "Avancar". O IG tem fluxos diferentes:
