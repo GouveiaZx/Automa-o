@@ -6,7 +6,12 @@ import { mediaInputSchema } from '@automacao/shared';
 import { prisma } from '../../prisma.js';
 
 const MEDIA_DIR = join(process.cwd(), 'media');
-const ALLOWED = new Set(['.mp4', '.mov', '.jpg', '.jpeg', '.png']);
+// .webp e .heic comuns hoje em fotos de celular (iPhone HEIC, screenshots .webp).
+// .webm e .m4v video files comuns. IG aceita todos via upload nativo.
+const ALLOWED = new Set([
+  '.mp4', '.mov', '.webm', '.m4v',
+  '.jpg', '.jpeg', '.png', '.webp', '.heic',
+]);
 const MAX_SIZE_MB = 200;
 
 export async function mediaRoutes(app: FastifyInstance) {

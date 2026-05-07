@@ -498,30 +498,49 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       return true;
     };
 
-    // Step 3: tela "Cortar" → click "Avançar"
-    if (!(await clickAdvance(12000))) {
-      // Tenta de novo apos fechar qualquer modal residual
-      await dismissInfoModal(page);
-      if (!(await clickAdvance(6000))) {
-        const dbg = await captureDebug(page, 'no-advance-1');
-        return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
-      }
-    }
-    await humanDelay(2500, 4000);
+    // Step 3-4: loop adaptativo de "Avancar". O IG tem fluxos diferentes:
+    //   - Foto: Cortar -> Filtros -> Caption (2 cliques)
+    //   - Video: Cortar -> Editar (cover/trim) -> Filtros -> Caption (3 cliques)
+    //   - As vezes pula Filtros (1-2 cliques)
+    // Em vez de fixed 2 cliques, loop ate detectar caption visivel
+    // (sinal que ja chegou na tela final). Max 5 tentativas pra evitar loop
+    // infinito caso IG quebre o fluxo.
+    const captionSelectors =
+      'div[contenteditable="true"][aria-label*="legenda" i],' +
+      'div[contenteditable="true"][aria-label*="caption" i],' +
+      'textarea[aria-label*="legenda" i],' +
+      'textarea[aria-label*="caption" i]';
 
-    // Step 3.5: pode aparecer outro modal entre as telas (ex: "Compartilhar como Reels"
-    // tem confirmacoes secundarias). Fecha qualquer popup informativo.
-    await dismissInfoModal(page);
-
-    // Step 4: tela "Editar" (filtros) → click "Avançar"
-    if (!(await clickAdvance(12000))) {
+    let advanceClicks = 0;
+    for (let attempt = 0; attempt < 5; attempt++) {
       await dismissInfoModal(page);
-      if (!(await clickAdvance(6000))) {
-        const dbg = await captureDebug(page, 'no-advance-2');
-        return { ok: false, reason: `no_advance_after_filters ${dbg.screenshot ?? ''}` };
+
+      // Sai do loop quando ja chegou na tela de Caption
+      const captionVisible = await page
+        .locator(captionSelectors)
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false);
+      if (captionVisible) break;
+
+      const ok = await clickAdvance(attempt === 0 ? 12_000 : 6_000);
+      if (!ok) {
+        // Tenta fechar modal e clicar de novo
+        await dismissInfoModal(page);
+        if (!(await clickAdvance(4_000))) {
+          // Nao achou Avancar — falha so se nem o primeiro click rolou
+          if (advanceClicks === 0) {
+            const dbg = await captureDebug(page, 'no-advance-1');
+            return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
+          }
+          // Ja clicou pelo menos 1x — provavel que ja esta na tela final.
+          // Sai do loop e deixa Step 5 (caption) tentar.
+          break;
+        }
       }
+      advanceClicks++;
+      await humanDelay(2500, 4000);
     }
-    await humanDelay(2500, 4000);
 
     // Step 5: caption (opcional). Se houver linkUrl, concatena ao final
     // (IG não permite link clicável na caption de post, mas o operador

@@ -76,7 +76,7 @@ export default function MediaPage() {
           // Detecta foto vs video pela extensao. Foto -> type=photo,
           // video -> type=reel. Story foi removido do UI.
           const ext = file.name.toLowerCase().split('.').pop() ?? '';
-          const isPhoto = ['jpg', 'jpeg', 'png'].includes(ext);
+          const isPhoto = ['jpg', 'jpeg', 'png', 'webp', 'heic'].includes(ext);
           const fd = new FormData();
           fd.append('file', file);
           fd.append('type', isPhoto ? 'photo' : 'reel');
@@ -265,7 +265,7 @@ export default function MediaPage() {
               <Label>Arquivos (selecione ate {MAX_FILES_PER_BATCH} fotos/videos de uma vez)</Label>
               <Input
                 type="file"
-                accept=".mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png"
+                accept=".mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png,.webp,.heic"
                 multiple
                 onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
                 required
