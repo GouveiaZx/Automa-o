@@ -390,6 +390,30 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     }
     await humanDelay(2000, 3000);
 
+    // Step 1.5: Em alguns layouts (IG novo, perfil com extensao Inssist instalada,
+    // etc) o "+" abre um submenu (Postar / Video ao vivo / Anuncio) em vez de abrir
+    // direto o dialog de upload. Se for esse caso, clica "Postar" pra abrir o dialog.
+    // Se "+" ja abriu o dialog direto, esse step e no-op (selector nao acha "Postar"
+    // num timeout curto e segue).
+    const dialogReady = await page
+      .getByRole('dialog')
+      .filter({ hasText: /Selecionar do computador|Select from computer/i })
+      .first()
+      .isVisible({ timeout: 800 })
+      .catch(() => false);
+    if (!dialogReady) {
+      try {
+        await page
+          .getByRole('link', { name: /^Postar$|^Post$/i })
+          .or(page.getByRole('button', { name: /^Postar$|^Post$/i }))
+          .first()
+          .click({ timeout: 3000 });
+        await humanDelay(1500, 2500);
+      } catch {
+        /* sem submenu — continua, Step 2 vai capturar se realmente quebrou */
+      }
+    }
+
     // Step 2: Modal "Criar novo post" → click "Selecionar do computador" + setFiles
     try {
       const dialogBtn = page
