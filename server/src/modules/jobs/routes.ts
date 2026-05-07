@@ -5,6 +5,17 @@ import { bus } from '../../events.js';
 import { appLog } from '../../logger.js';
 import { nextSlots } from '../../automation/scheduler.js';
 
+// Fisher-Yates shuffle in-place. Usado no bulk pra ordem aleatoria de midias
+// (mistura foto + video pra ficar mais natural, em vez de postar tudo em
+// ordem de createdAt).
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 export async function jobRoutes(app: FastifyInstance) {
   app.addHook('preHandler', app.authenticate);
 
@@ -96,6 +107,10 @@ export async function jobRoutes(app: FastifyInstance) {
     if (medias.length !== parsed.data.mediaIds.length) {
       return reply.status(404).send({ error: 'some_media_not_found' });
     }
+
+    // Embaralha pra mistura natural (ex: foto + video alternando) em vez
+    // de sair tudo na ordem de createdAt.
+    shuffleInPlace(medias);
 
     const now = Date.now();
     const created = [];
@@ -234,12 +249,16 @@ export async function jobRoutes(app: FastifyInstance) {
             return new Date(now + offset + accountJitter);
           });
 
-      for (let i = 0; i < medias.length; i++) {
+      // Embaralha midias POR CONTA — cada conta posta na ordem dela
+      // (foto e video alternando aleatorio em vez de todas igual).
+      const shuffledMedias = shuffleInPlace([...medias]);
+
+      for (let i = 0; i < shuffledMedias.length; i++) {
         const job = await prisma.postJob.create({
           data: {
             accountId: account.id,
-            mediaId: medias[i].id,
-            type: medias[i].type,
+            mediaId: shuffledMedias[i].id,
+            type: shuffledMedias[i].type,
             status: 'queued',
             scheduledFor: slotDates[i],
           },
@@ -308,7 +327,7 @@ function serializeJob(j: {
     id: j.id,
     accountId: j.accountId,
     mediaId: j.mediaId,
-    type: j.type as 'story' | 'reel',
+    type: j.type as 'story' | 'reel' | 'photo',
     status: j.status as 'queued' | 'running' | 'done' | 'failed' | 'retry',
     attempts: j.attempts,
     scheduledFor: j.scheduledFor.toISOString(),

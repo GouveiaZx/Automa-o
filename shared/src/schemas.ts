@@ -71,7 +71,7 @@ export const accountStatusUpdateSchema = z.object({
 });
 
 export const mediaInputSchema = z.object({
-  type: z.enum(['story', 'reel']),
+  type: z.enum(['story', 'reel', 'photo']),
   caption: z.string().max(2200).nullable().optional(),
   linkUrl: z.string().url().max(500).nullable().optional(),
   tag: z.string().max(80).nullable().optional(),

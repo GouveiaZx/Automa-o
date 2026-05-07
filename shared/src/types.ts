@@ -1,7 +1,7 @@
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'retry';
 export type AccountStatus = 'active' | 'paused' | 'needs_login' | 'error';
 export type ProfileStatus = 'idle' | 'running' | 'error' | 'paused';
-export type MediaType = 'story' | 'reel';
+export type MediaType = 'story' | 'reel' | 'photo';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type LogSource = 'worker' | 'api' | 'driver';
 export type AutomationMode = 'mock' | 'real';

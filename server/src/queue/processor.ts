@@ -213,7 +213,7 @@ async function emitJob(jobId: string): Promise<void> {
       id: j.id,
       accountId: j.accountId,
       mediaId: j.mediaId,
-      type: j.type as 'story' | 'reel',
+      type: j.type as 'story' | 'reel' | 'photo',
       status: j.status as 'queued' | 'running' | 'done' | 'failed' | 'retry',
       attempts: j.attempts,
       scheduledFor: j.scheduledFor.toISOString(),

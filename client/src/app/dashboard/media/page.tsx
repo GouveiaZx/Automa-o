@@ -73,9 +73,13 @@ export default function MediaPage() {
     for (const file of files) {
       for (const campaignId of campaignIds) {
         try {
+          // Detecta foto vs video pela extensao. Foto -> type=photo,
+          // video -> type=reel. Story foi removido do UI.
+          const ext = file.name.toLowerCase().split('.').pop() ?? '';
+          const isPhoto = ['jpg', 'jpeg', 'png'].includes(ext);
           const fd = new FormData();
           fd.append('file', file);
-          fd.append('type', 'reel'); // Story removido do UI; sistema posta tudo no feed
+          fd.append('type', isPhoto ? 'photo' : 'reel');
           fd.append('campaignId', campaignId);
           if (caption) fd.append('caption', caption);
           if (tag) fd.append('tag', tag);
@@ -258,10 +262,10 @@ export default function MediaPage() {
               </p>
             </div>
             <div className="space-y-1">
-              <Label>Arquivos (selecione ate {MAX_FILES_PER_BATCH} videos de uma vez)</Label>
+              <Label>Arquivos (selecione ate {MAX_FILES_PER_BATCH} fotos/videos de uma vez)</Label>
               <Input
                 type="file"
-                accept=".mp4,.mov,.webm,.m4v"
+                accept=".mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png"
                 multiple
                 onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
                 required
