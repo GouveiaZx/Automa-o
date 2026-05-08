@@ -76,13 +76,11 @@ async function getPage(adsPowerId: string): Promise<Page> {
  * de video sao compartilhados como reels"). Sao popups com botao "OK" no centro
  * da tela que travam o fluxo. Sai sem erro se nao achar nada (no-op).
  */
-async function dismissInfoModal(page: Page): Promise<void> {
-  // Tenta varios labels comuns em ambos: <button> e <div role=button>.
-  // IG moderno usa role=button em divs. Timeout curto pra nao demorar quando nao tem modal.
-  // CRITICO: nao incluir "Compartilhar", "Share", "Avançar", "Next" aqui — esses sao
-  // botoes de acao primaria do fluxo (cada Step clica eles na hora certa).
-  // Se incluidos, o dismissInfoModal cascateia pelas telas (Cortar→Filtros→Caption→Sharing)
-  // e quebra o fluxo, gerando no_advance_after_upload com screenshot da Sharing.
+async function dismissInfoModal(page: Page, depth = 0): Promise<void> {
+  // Limita profundidade pra evitar recursao infinita se popup nao fecha
+  // (Codex audit #1: click podia falhar silent + recursive sem condicao de parada).
+  if (depth >= 4) return;
+
   const labels = [
     'OK', 'Ok',
     'Entendi', 'Got it',
@@ -91,7 +89,6 @@ async function dismissInfoModal(page: Page): Promise<void> {
     'Sim', 'Yes',
     'Concluir', 'Done', 'Concluído', 'Concluido',
   ];
-  // Gera selectors pra cada label em ambos formatos
   const okSelectors: string[] = [];
   for (const label of labels) {
     okSelectors.push(`div[role="dialog"] button:has-text("${label}")`);
@@ -101,10 +98,25 @@ async function dismissInfoModal(page: Page): Promise<void> {
     try {
       const btn = page.locator(sel).first();
       if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
-        await btn.click({ timeout: 2000 }).catch(() => undefined);
+        // Snapshot do dialog ANTES do click pra detectar se realmente fechou
+        const beforeText = await page.evaluate(() => {
+          const d = document.querySelector('div[role="dialog"]');
+          return d ? (d.textContent || '').slice(0, 100) : '';
+        }).catch(() => '');
+
+        const clicked = await btn.click({ timeout: 2000 }).then(() => true).catch(() => false);
         await humanDelay(500, 1000);
-        // Tenta DE NOVO recursivamente caso aparece outro modal em sequencia
-        await dismissInfoModal(page);
+
+        // So recurse se click foi bem-sucedido E o dialog mudou
+        if (clicked) {
+          const afterText = await page.evaluate(() => {
+            const d = document.querySelector('div[role="dialog"]');
+            return d ? (d.textContent || '').slice(0, 100) : '';
+          }).catch(() => '');
+          if (afterText !== beforeText) {
+            await dismissInfoModal(page, depth + 1);
+          }
+        }
         return;
       }
     } catch { /* tenta proximo */ }
@@ -541,18 +553,26 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         } catch { /* fallthrough pra estrategia 4 */ }
       }
 
-      // Estrategia 4: JS global search no DOM inteiro (incluindo Shadow DOM e
-      // iframes mesmo-origem). Busca por textContent OU aria-label que case
-      // com regex "avancar/next/proximo/continuar/etc". Se achar, dispara
-      // sequencia REAL de eventos (pointerdown -> pointerup -> click) em vez
-      // de so el.click() — alguns componentes React esperam pointer events.
+      // Estrategia 4: JS search SCOPED no dialog ativo (Codex audit #2: antes
+      // varria DOM inteiro e podia clicar "Continue"/"Continuar" de popup
+      // diferente). Agora escopa em div[role=dialog] ativo + remove labels
+      // ambiguas (continuar/continue) — so avancar/next/proximo.
       try {
         const clickedGlobal = await page.evaluate(() => {
-          const RE = /^\s*(avancar|avançar|next|proximo|próximo|continuar|continue)\s*$/i;
+          const RE = /^\s*(avancar|avançar|next|proximo|próximo)\s*$/i;
 
-          // Coleta TODOS os elementos do DOM, incluindo Shadow DOM
-          // (querySelectorAll nao penetra shadow root sozinho).
-          function collectAll(root: Document | ShadowRoot): Element[] {
+          // Acha o dialog ativo (visivel) — preferencia pelo de "Criar novo post"
+          // ou Editar; senao pega o primeiro visivel.
+          const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+          const visibleDialogs = dialogs.filter((d) => {
+            const r = (d as HTMLElement).getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          if (visibleDialogs.length === 0) return false;
+
+          // Coleta elementos APENAS de dialogs visiveis (incluindo Shadow DOM
+          // dentro do dialog, mas nao do resto da pagina).
+          function collectAll(root: Element | ShadowRoot): Element[] {
             const result: Element[] = [];
             const all = root.querySelectorAll('*');
             for (const el of Array.from(all)) {
@@ -562,16 +582,8 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             }
             return result;
           }
-
-          const elements: Element[] = collectAll(document);
-
-          // Adiciona elementos de iframes mesmo-origem (cross-origin lança)
-          for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
-            try {
-              const doc = (iframe as HTMLIFrameElement).contentDocument;
-              if (doc) elements.push(...collectAll(doc));
-            } catch { /* cross-origin */ }
-          }
+          const elements: Element[] = [];
+          for (const d of visibleDialogs) elements.push(...collectAll(d));
 
           // Procura primeiro elemento visivel cujo texto/aria-label case com regex
           for (const el of elements) {
@@ -640,21 +652,23 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
           }
           if (filterCount < 2) return false; // nao estamos na tela de Filtros
 
-          // Clica Original
+          // Clica Original — APENAS se achou um ancestor button/role=button
+          // legitimo (Codex audit #5: antes retornava true mesmo clicando em
+          // span decorativo, marcava flag e nunca retentava).
           for (const el of all) {
             const r = (el as HTMLElement).getBoundingClientRect?.();
             if (!r || r.width === 0 || r.height === 0) continue;
             const txt = (el.textContent || '').trim();
             if (RE.test(txt)) {
-              // CRITICO: usar APENAS button/role=button como ancestor — NAO
-              // subir pra div generic. Bug anterior: closest('div') subia pro
-              // container de TODOS os filtros, click ali fazia React reselecionar
-              // o filtro DEFAULT (Reyes), criando loop visual de "fantasma".
-              const target = (
-                el.matches('button,[role="button"]')
-                  ? el
-                  : el.closest('button,[role="button"]') ?? el
-              ) as HTMLElement;
+              const ancestor = el.matches('button,[role="button"]')
+                ? el
+                : el.closest('button,[role="button"]');
+              if (!ancestor) {
+                // Sem ancestor clickable — nao confiavel. Pula esse match e
+                // tenta o proximo elemento (caso haja varios "Original" no DOM).
+                continue;
+              }
+              const target = ancestor as HTMLElement;
               const tr = target.getBoundingClientRect();
               const opts: MouseEventInit = {
                 bubbles: true, cancelable: true, view: window,
@@ -684,17 +698,23 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // sao rejeitados pelo IG com modal cujo aria-label do dialog contem essa
     // mensagem. Sem detectar, bot fica preso esperando Avancar inexistente.
     const uploadErrorVisible = await page.evaluate(() => {
+      // Codex audit #4: ler tambem textContent do dialog (nao so aria-label).
+      // IG as vezes nao tem aria-label util, mas tem o texto na UI.
+      const PHRASES = [
+        'não foi possível carregar',
+        'nao foi possivel carregar',
+        "couldn't upload",
+        'unable to upload',
+        'error uploading',
+      ];
       const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
       for (const d of dialogs) {
         const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
-        if (
-          lbl.includes('não foi possível carregar') ||
-          lbl.includes('nao foi possivel carregar') ||
-          lbl.includes('couldn\'t upload') ||
-          lbl.includes('unable to upload') ||
-          lbl.includes('error uploading')
-        ) {
-          return lbl;
+        const txt = (d.textContent || '').toLowerCase();
+        for (const p of PHRASES) {
+          if (lbl.includes(p) || txt.includes(p)) {
+            return lbl || txt.slice(0, 100);
+          }
         }
       }
       return null;
@@ -895,8 +915,17 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       // sequencia real de eventos (pointer + mouse + click).
       try {
         return await page.evaluate(() => {
+          // SCOPED no dialog ativo (Codex audit #3: antes varria DOM inteiro
+          // e podia clicar Post/Share fora do composer — ex: nav, popup, etc).
           const RE = /^\s*(compartilhar|share|publicar|post|enviar)\s*$/i;
-          function collectAll(root: Document | ShadowRoot): Element[] {
+          const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+          const visibleDialogs = dialogs.filter((d) => {
+            const r = (d as HTMLElement).getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          if (visibleDialogs.length === 0) return false;
+
+          function collectAll(root: Element | ShadowRoot): Element[] {
             const result: Element[] = [];
             for (const el of Array.from(root.querySelectorAll('*'))) {
               result.push(el);
@@ -905,13 +934,8 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             }
             return result;
           }
-          const elements: Element[] = collectAll(document);
-          for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
-            try {
-              const doc = (iframe as HTMLIFrameElement).contentDocument;
-              if (doc) elements.push(...collectAll(doc));
-            } catch { /* cross-origin */ }
-          }
+          const elements: Element[] = [];
+          for (const d of visibleDialogs) elements.push(...collectAll(d));
           for (const el of elements) {
             const r = (el as HTMLElement).getBoundingClientRect?.();
             if (!r || r.width === 0 || r.height === 0) continue;
