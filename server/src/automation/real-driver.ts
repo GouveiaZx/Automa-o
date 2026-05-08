@@ -475,13 +475,15 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // (so pra videos). Precisa clicar OK pra prosseguir, senao trava na tela "Cortar".
     await dismissInfoModal(page);
 
-    // Helper: tenta clicar Avançar/Next cobrindo button, [role=button], <a> e <div> clickable.
-    // Em algumas telas (ex: Edit/Filters pra foto) o IG renderiza esse botao como <div>
-    // ou <a> sem role explicito de button, e getByRole('button') nao match.
+    // Helper: tenta clicar Avançar/Next cobrindo button, [role=button], <a> e <div>.
+    // 12 selectors (8 com :has-text + 4 com aria-label) + 3 estrategias de click
+    // (normal -> force -> JS evaluate). Cobre IG renderizando botao como elemento
+    // sem texto literal (so aria-label) ou com overlay invisivel bloqueando hit-test.
     const clickAdvance = async (timeoutMs: number) => {
       const btn = await findAny(
         page,
         [
+          // texto literal
           'div[role="dialog"] button:has-text("Avançar")',
           'div[role="dialog"] button:has-text("Next")',
           'div[role="dialog"] [role="button"]:has-text("Avançar")',
@@ -490,14 +492,37 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
           'div[role="dialog"] a:has-text("Next")',
           'div[role="dialog"] div:has-text("Avançar"):not(:has(*))',
           'div[role="dialog"] div:has-text("Next"):not(:has(*))',
+          // aria-label (cobre IG renderizando texto via CSS pseudo-element)
+          'div[role="dialog"] [aria-label="Avançar"]',
+          'div[role="dialog"] [aria-label="Next"]',
+          'div[role="dialog"] [aria-label*="vançar" i]',
+          'div[role="dialog"] [aria-label*="next" i]',
         ],
         timeoutMs
       );
       if (!btn) return false;
-      // Propaga falha do click — se overlay bloqueou ou btn nao clicavel,
-      // o caller pode tentar dismissInfoModal + retry.
+
+      // Estrategia 1: click normal (auto-wait + hit-testing do Playwright)
       try {
         await btn.click({ timeout: 5000 });
+        return true;
+      } catch {
+        /* tenta estrategia 2 */
+      }
+      // Estrategia 2: force click (skip hit-testing, ignora overlay invisivel)
+      try {
+        await btn.click({ force: true, timeout: 3000 });
+        return true;
+      } catch {
+        /* tenta estrategia 3 */
+      }
+      // Estrategia 3: JS .click() direto no DOM. Se o elemento for filho de
+      // outro clickable (ex: <span> dentro de <button>), sobe pra ancestor.
+      try {
+        await btn.evaluate((el: HTMLElement) => {
+          const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
+          target.click();
+        });
         return true;
       } catch {
         return false;
@@ -538,6 +563,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     };
 
     let advanceClicks = 0;
+    let stuckAfterAdvance = false;
     for (let attempt = 0; attempt < 5; attempt++) {
       await dismissInfoModal(page);
 
@@ -556,11 +582,18 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
           }
           // Ja clicou pelo menos 1x — provavel que ja esta na tela final.
           // Sai do loop e deixa Step 5 (caption) tentar.
+          stuckAfterAdvance = true;
           break;
         }
       }
       advanceClicks++;
       await humanDelay(2500, 4000);
+    }
+
+    // Se loop fez progresso mas nao chegou em caption, captura debug pra
+    // investigar (sem falhar — Step 5/6 ainda tentam).
+    if ((stuckAfterAdvance || advanceClicks >= 5) && !(await isOnCaptionScreen())) {
+      void captureDebug(page, 'stuck-after-advance').catch(() => undefined);
     }
 
     // Step 5: caption (opcional). Se houver linkUrl, concatena ao final
