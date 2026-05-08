@@ -606,6 +606,66 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       return false;
     };
 
+    // Helper: na tela de Filtros do IG, clica em "Original" (filtro neutro).
+    // Por que: IG entra na tela com algum filtro default selecionado (ex: Reyes)
+    // com slider em 100, deixando a foto desbotada. Plus: enquanto IG aplica esse
+    // filtro default em background, o botao "Avancar" pode ficar temporariamente
+    // disabled, fazendo o bot travar. Clicar Original neutraliza o filtro E
+    // sincroniza o IG antes do proximo Avancar.
+    //
+    // Se nao estamos na tela de Filtros (Original nao visivel), retorna false
+    // sem efeito — no-op silencioso.
+    const clickOriginalFilter = async (): Promise<boolean> => {
+      try {
+        return await page.evaluate(() => {
+          // Busca elemento visivel com texto EXATO "Original" (filtro)
+          const RE = /^\s*Original\s*$/;
+          const all = Array.from(document.querySelectorAll('button, [role="button"], div, span'));
+          // Defesa: precisa ter pelo menos 2 outros nomes de filtro visiveis
+          // pra confirmar que estamos na tela de Filtros (evita falso positivo
+          // em outras telas que tenham texto "Original" em outro contexto).
+          const FILTER_NAMES = ['Aden', 'Clarendon', 'Crema', 'Gingham', 'Juno', 'Lark', 'Ludwig', 'Moon', 'Perpetua', 'Reyes', 'Slumber'];
+          let filterCount = 0;
+          for (const el of all) {
+            const r = (el as HTMLElement).getBoundingClientRect?.();
+            if (!r || r.width === 0 || r.height === 0) continue;
+            const txt = (el.textContent || '').trim();
+            if (FILTER_NAMES.includes(txt)) filterCount++;
+            if (filterCount >= 2) break;
+          }
+          if (filterCount < 2) return false; // nao estamos na tela de Filtros
+
+          // Clica Original
+          for (const el of all) {
+            const r = (el as HTMLElement).getBoundingClientRect?.();
+            if (!r || r.width === 0 || r.height === 0) continue;
+            const txt = (el.textContent || '').trim();
+            if (RE.test(txt)) {
+              const target = (el.closest('button,[role="button"],div') ?? el) as HTMLElement;
+              const tr = target.getBoundingClientRect();
+              const opts: MouseEventInit = {
+                bubbles: true, cancelable: true, view: window,
+                clientX: tr.x + tr.width / 2, clientY: tr.y + tr.height / 2,
+                button: 0, buttons: 1,
+              };
+              try {
+                target.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mousedown', opts));
+                target.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mouseup', opts));
+              } catch { /* PointerEvent indisponivel */ }
+              target.dispatchEvent(new MouseEvent('click', opts));
+              target.click();
+              return true;
+            }
+          }
+          return false;
+        });
+      } catch {
+        return false;
+      }
+    };
+
     // Step 3-4: loop adaptativo de "Avancar". O IG tem fluxos diferentes:
     //   - Foto: Cortar -> Filtros -> Caption (2 cliques)
     //   - Video: Cortar -> Editar (cover/trim) -> Filtros -> Caption (3 cliques)
@@ -646,6 +706,20 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
       // Sai do loop quando chegou na tela de Caption (caption + share visiveis)
       if (await isOnCaptionScreen()) break;
+
+      // Se estamos na tela de Filtros, clica "Original" antes pra (a) tirar o
+      // filtro default que IG aplica (Reyes, etc — deixa foto desbotada) e
+      // (b) sincronizar o IG antes do Avancar (botao pode estar temp disabled
+      // enquanto IG aplica filtro). Se nao estamos na tela de Filtros, no-op.
+      const clickedOriginal = await clickOriginalFilter();
+      if (clickedOriginal) {
+        await appLog({
+          source: 'driver',
+          level: 'info',
+          message: `[real] filtro "Original" aplicado pra desfazer filtro default do IG`,
+        });
+        await humanDelay(1500, 2500); // tempo pra IG aplicar
+      }
 
       const ok = await clickAdvance(attempt === 0 ? 12_000 : 6_000);
       if (!ok) {
