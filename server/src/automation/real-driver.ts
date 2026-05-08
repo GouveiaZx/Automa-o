@@ -536,20 +536,64 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         } catch { /* fallthrough pra estrategia 4 */ }
       }
 
-      // Estrategia 4: JS global search no DOM inteiro. Ignora qualquer
-      // problema de escopo/selector CSS — busca por texto ou aria-label
-      // "avançar/next" em qualquer elemento visivel.
+      // Estrategia 4: JS global search no DOM inteiro (incluindo Shadow DOM e
+      // iframes mesmo-origem). Busca por textContent OU aria-label que case
+      // com regex "avancar/next/proximo/continuar/etc". Se achar, dispara
+      // sequencia REAL de eventos (pointerdown -> pointerup -> click) em vez
+      // de so el.click() — alguns componentes React esperam pointer events.
       try {
         const clickedGlobal = await page.evaluate(() => {
-          const all = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'));
-          const TARGETS = new Set(['avançar', 'avancar', 'next']);
-          for (const el of all) {
-            const r = (el as HTMLElement).getBoundingClientRect();
-            if (r.width === 0 || r.height === 0) continue;
-            const txt = (el.textContent?.trim() || '').toLowerCase();
-            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-            if (TARGETS.has(txt) || TARGETS.has(aria)) {
+          const RE = /^\s*(avancar|avançar|next|proximo|próximo|continuar|continue)\s*$/i;
+
+          // Coleta TODOS os elementos do DOM, incluindo Shadow DOM
+          // (querySelectorAll nao penetra shadow root sozinho).
+          function collectAll(root: Document | ShadowRoot): Element[] {
+            const result: Element[] = [];
+            const all = root.querySelectorAll('*');
+            for (const el of Array.from(all)) {
+              result.push(el);
+              const sr = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+              if (sr) result.push(...collectAll(sr));
+            }
+            return result;
+          }
+
+          const elements: Element[] = collectAll(document);
+
+          // Adiciona elementos de iframes mesmo-origem (cross-origin lança)
+          for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+            try {
+              const doc = (iframe as HTMLIFrameElement).contentDocument;
+              if (doc) elements.push(...collectAll(doc));
+            } catch { /* cross-origin */ }
+          }
+
+          // Procura primeiro elemento visivel cujo texto/aria-label case com regex
+          for (const el of elements) {
+            const r = (el as HTMLElement).getBoundingClientRect?.();
+            if (!r || r.width === 0 || r.height === 0) continue;
+            // Limpa zero-width spaces e NBSP do texto
+            const txtRaw = el.textContent?.replace(/[​-‍﻿ ]/g, ' ') || '';
+            const aria = (el.getAttribute('aria-label') || '');
+            if (RE.test(txtRaw.trim()) || RE.test(aria.trim())) {
               const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
+              // Estrategia 5: simular sequencia de eventos REAL (pointer + mouse + click)
+              // pra cobrir componentes React que usam onPointerDown.
+              const tr = target.getBoundingClientRect();
+              const x = tr.x + tr.width / 2;
+              const y = tr.y + tr.height / 2;
+              const opts: MouseEventInit = {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, button: 0, buttons: 1,
+              };
+              try {
+                target.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mousedown', opts));
+                target.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mouseup', opts));
+              } catch { /* PointerEvent pode nao estar disponivel */ }
+              target.dispatchEvent(new MouseEvent('click', opts));
+              // Tambem chama .click() nativo como reforco
               target.click();
               return true;
             }
