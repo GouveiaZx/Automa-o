@@ -15,7 +15,9 @@ const schema = z.object({
   AUTOMATION_MOCK_FAIL_RATE: z.coerce.number().min(0).max(1).default(0.1),
   AUTOMATION_MOCK_MIN_DELAY: z.coerce.number().int().nonnegative().default(2000),
   AUTOMATION_MOCK_MAX_DELAY: z.coerce.number().int().nonnegative().default(8000),
-  ADSPOWER_API_URL: z.string().default('http://local.adspower.net:50325'),
+  // AdsPower local API. Versoes recentes do AdsPower mudaram a porta default
+  // de 50325 pra 50389. Usuarios em versoes antigas podem sobrescrever via .env.
+  ADSPOWER_API_URL: z.string().default('http://localhost:50389'),
   ADSPOWER_API_KEY: z.string().optional(),
   PLAYWRIGHT_HEADLESS: z.string().default('false'),
   PLAYWRIGHT_SLOW_MO_MS: z.coerce.number().int().nonnegative().default(0),

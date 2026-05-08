@@ -475,46 +475,51 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // (so pra videos). Precisa clicar OK pra prosseguir, senao trava na tela "Cortar".
     await dismissInfoModal(page);
 
-    // Helper: tenta clicar Avançar/Next com 4 estrategias em sequencia.
+    // Helper: clica Avançar/Next com estrategia robusta.
     //
-    // Selectors: 12 com escopo `div[role="dialog"]` (caso comum) + 8 SEM escopo
-    // (caso IG novo onde a tela "Editar" nao esta dentro de role=dialog).
+    // Descoberta confirmada via teste real (inspect-ig.mjs): no IG novo o botao
+    // eh `<div role="button" aria-label="" class="...">Avançar</div>` —
+    // aria-label VAZIO, role=button, text exato. NAO eh um <button> nativo.
+    // `page.getByRole('button', { name: 'Avançar' })` cobre esse caso direto.
     //
-    // Estrategias de click:
-    //   1. Normal (auto-wait + hit-testing) — cobre 90% dos casos
-    //   2. Force (skip hit-testing) — cobre overlay invisivel
-    //   3. JS evaluate no elemento (sobe pra ancestor clickable)
-    //   4. JS global search no DOM inteiro — busca por textContent OU aria-label
-    //      "avançar/next" em qualquer elemento visivel, sobe pra ancestor
-    //      clickable e dispara click. Cobre o caso de selectors CSS nao baterem.
+    // Estrategias em ordem:
+    //   1. getByRole (Playwright nativo, cobre IG novo + classico)
+    //   2. findAny CSS selectors fallback (cobre versoes antigas)
+    //   3. JS global search no DOM (incluindo Shadow DOM + iframes)
+    //      com sequencia real de eventos (pointer + mouse + click)
     const clickAdvance = async (timeoutMs: number) => {
+      // Estrategia 1: getByRole nativo do Playwright — pega `<button>` ou `[role="button"]`
+      // com texto/aria-label "Avançar" ou "Next". Confirmado funcional via inspect-ig.mjs.
+      try {
+        const roleBtn = page.getByRole('button', { name: /^(Avançar|Next)$/i }).first();
+        if (await roleBtn.isVisible({ timeout: Math.min(timeoutMs, 3000) }).catch(() => false)) {
+          try {
+            await roleBtn.click({ timeout: 5000 });
+            return true;
+          } catch { /* tenta force */ }
+          try {
+            await roleBtn.click({ force: true, timeout: 3000 });
+            return true;
+          } catch { /* fallthrough */ }
+        }
+      } catch { /* fallthrough */ }
+
+      // Estrategia 2: findAny CSS selectors (fallback pra versoes antigas)
       const btn = await findAny(
         page,
         [
-          // Scope: dialog (caso comum)
-          'div[role="dialog"] button:has-text("Avançar")',
-          'div[role="dialog"] button:has-text("Next")',
           'div[role="dialog"] [role="button"]:has-text("Avançar")',
           'div[role="dialog"] [role="button"]:has-text("Next")',
-          'div[role="dialog"] a:has-text("Avançar")',
-          'div[role="dialog"] a:has-text("Next")',
-          'div[role="dialog"] div:has-text("Avançar"):not(:has(*))',
-          'div[role="dialog"] div:has-text("Next"):not(:has(*))',
-          'div[role="dialog"] [aria-label="Avançar"]',
-          'div[role="dialog"] [aria-label="Next"]',
-          'div[role="dialog"] [aria-label*="vançar" i]',
-          'div[role="dialog"] [aria-label*="next" i]',
-          // Scope: GLOBAL (caso a tela nao esteja dentro de role=dialog)
-          'button:has-text("Avançar")',
-          'button:has-text("Next")',
+          'div[role="dialog"] button:has-text("Avançar")',
+          'div[role="dialog"] button:has-text("Next")',
           '[role="button"]:has-text("Avançar")',
           '[role="button"]:has-text("Next")',
+          'button:has-text("Avançar")',
+          'button:has-text("Next")',
           'a:has-text("Avançar")',
           'a:has-text("Next")',
-          '[aria-label="Avançar"]',
-          '[aria-label="Next"]',
         ],
-        timeoutMs
+        Math.min(timeoutMs, 4000)
       );
 
       // Estrategia 1+2+3: usa o btn encontrado pelo findAny, se houver
@@ -665,6 +670,34 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         return false;
       }
     };
+
+    // Detecta se IG mostrou modal de erro do upload (ex: "Não foi possível
+    // carregar o arquivo"). Confirmado via teste real: arquivos invalidos/pequenos
+    // sao rejeitados pelo IG com modal cujo aria-label do dialog contem essa
+    // mensagem. Sem detectar, bot fica preso esperando Avancar inexistente.
+    const uploadErrorVisible = await page.evaluate(() => {
+      const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+      for (const d of dialogs) {
+        const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
+        if (
+          lbl.includes('não foi possível carregar') ||
+          lbl.includes('nao foi possivel carregar') ||
+          lbl.includes('couldn\'t upload') ||
+          lbl.includes('unable to upload') ||
+          lbl.includes('error uploading')
+        ) {
+          return lbl;
+        }
+      }
+      return null;
+    }).catch(() => null);
+    if (uploadErrorVisible) {
+      const dbg = await captureDebug(page, 'upload-rejected-by-ig');
+      return {
+        ok: false,
+        reason: `upload_rejected_by_ig: "${uploadErrorVisible}" — arquivo provavelmente invalido (formato/size/codec). ${dbg.screenshot ?? ''}`,
+      };
+    }
 
     // Step 3-4: loop adaptativo de "Avancar". O IG tem fluxos diferentes:
     //   - Foto: Cortar -> Filtros -> Caption (2 cliques)
