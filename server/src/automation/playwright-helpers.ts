@@ -106,7 +106,7 @@ export async function clickAny(
 export async function captureDebug(
   page: Page,
   tag: string
-): Promise<{ screenshot: string | null; html: string | null }> {
+): Promise<{ screenshot: string | null; html: string | null; diag: string | null }> {
   try {
     await mkdir(DEBUG_DIR, { recursive: true });
     // Cleanup oportunista: 1x por hora, apaga screenshots > 7 dias
@@ -118,13 +118,73 @@ export async function captureDebug(
     const safeTag = tag.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60);
     const pngName = `${safeTag}-${ts}.png`;
     const htmlName = `${safeTag}-${ts}.html`;
+    const diagName = `${safeTag}-${ts}.diag.txt`;
     const pngPath = join(DEBUG_DIR, pngName);
     const htmlPath = join(DEBUG_DIR, htmlName);
+    const diagPath = join(DEBUG_DIR, diagName);
     await page.screenshot({ path: pngPath, fullPage: true }).catch(() => undefined);
     const html = await page.content().catch(() => '');
     if (html) await writeFile(htmlPath, html, 'utf8').catch(() => undefined);
-    return { screenshot: `/media-files/debug/${pngName}`, html: `/media-files/debug/${htmlName}` };
+
+    // Dump diagnostico compacto: URL + lista de elementos visiveis com texto
+    // ou aria-label contendo palavras chave do flow ("avancar", "next",
+    // "compartilhar", "share", etc). Arquivo .txt eh pequeno (~5-50KB), facil
+    // de mandar via Workana, e me da TUDO que preciso pra ajustar selectors.
+    try {
+      const diag = await page.evaluate(() => {
+        const KEYWORDS = ['avancar', 'avançar', 'next', 'proximo', 'próximo', 'continuar', 'continue', 'compartilhar', 'share', 'publicar', 'post', 'enviar', 'original', 'cortar', 'crop', 'editar', 'edit', 'filtros', 'filters'];
+        function collectAll(root: Document | ShadowRoot): Element[] {
+          const result: Element[] = [];
+          for (const el of Array.from(root.querySelectorAll('*'))) {
+            result.push(el);
+            const sr = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+            if (sr) result.push(...collectAll(sr));
+          }
+          return result;
+        }
+        const elements: Element[] = collectAll(document);
+        for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+          try {
+            const doc = (iframe as HTMLIFrameElement).contentDocument;
+            if (doc) elements.push(...collectAll(doc));
+          } catch { /* cross-origin */ }
+        }
+        const matches: string[] = [];
+        for (const el of elements) {
+          const r = (el as HTMLElement).getBoundingClientRect?.();
+          if (!r || r.width === 0 || r.height === 0) continue;
+          const txt = (el.textContent || '').trim().slice(0, 80).toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const hit = KEYWORDS.some((k) => txt === k || aria === k || (txt.length < 30 && txt.includes(k)) || aria.includes(k));
+          if (!hit) continue;
+          const role = el.getAttribute('role') || '';
+          const cls = (el.getAttribute('class') || '').slice(0, 60);
+          matches.push(`${el.tagName}[role="${role}"][aria-label="${aria}"][class="${cls}"] text="${txt}"`);
+          if (matches.length >= 100) break;
+        }
+        return [
+          `URL: ${location.href}`,
+          `Title: ${document.title}`,
+          `Match count: ${matches.length}`,
+          '',
+          ...matches,
+        ].join('\n');
+      });
+      if (diag) await writeFile(diagPath, diag, 'utf8').catch(() => undefined);
+    } catch { /* diag falhou — segue sem */ }
+
+    // Loga caminho ABSOLUTO no console pra Gustavo achar facil sem ter que
+    // adivinhar onde a pasta debug esta.
+    console.log(`[debug] saved: ${pngPath}`);
+    console.log(`[debug] saved: ${htmlPath}`);
+    console.log(`[debug] saved: ${diagPath}`);
+
+    return {
+      screenshot: `/media-files/debug/${pngName}`,
+      html: `/media-files/debug/${htmlName}`,
+      diag: `/media-files/debug/${diagName}`,
+    };
   } catch {
-    return { screenshot: null, html: null };
+    return { screenshot: null, html: null, diag: null };
   }
 }
