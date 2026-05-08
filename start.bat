@@ -58,4 +58,4 @@ echo Senha: a definida no server\.env
 echo.
 echo Para PARAR, feche as 3 janelas que foram abertas.
 echo.
-pause
+pause

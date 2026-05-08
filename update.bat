@@ -81,4 +81,4 @@ echo ========================================
 echo.
 echo Rode .\start.bat para subir o sistema novamente.
 echo.
-pause
+pause

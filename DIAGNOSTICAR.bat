@@ -97,4 +97,4 @@ echo PROXIMO PASSO: manda esse arquivo no zap pro Eduardo.
 echo.
 echo Quer ja abrir o arquivo agora? Aperte qualquer tecla.
 pause >nul
-notepad "%OUT%"
+notepad "%OUT%"

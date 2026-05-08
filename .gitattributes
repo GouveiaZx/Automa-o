@@ -1,0 +1,25 @@
+# Arquivos batch (.bat, .cmd) DEVEM ter line endings Windows (CRLF) — senao
+# o cmd quebra linhas no meio dos comandos e gera erros tipo "'meout' nao
+# eh reconhecido como comando" (fragmento de "timeout").
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# PowerShell tambem
+*.ps1   text eol=crlf
+
+# Resto: line endings normais (auto-detection)
+* text=auto
+
+# Binarios — nao toca
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.heic  binary
+*.mp4   binary
+*.mov   binary
+*.webm  binary
+*.m4v   binary
+*.db    binary
+*.db-journal binary

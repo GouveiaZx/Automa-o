@@ -218,4 +218,4 @@ echo.
 echo Instalacao terminou em: %DATE% %TIME% >> "%LOG%"
 echo.
 echo Pronto! Aperte qualquer tecla pra fechar essa janela.
-pause >nul
+pause >nul

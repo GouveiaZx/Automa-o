@@ -87,4 +87,4 @@ echo  2. Confirme que o AdsPower esta rodando
 echo  3. Rode .\start.bat para subir o sistema
 echo  4. Acesse http://localhost:3000
 echo.
-pause
+pause
