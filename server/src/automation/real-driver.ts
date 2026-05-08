@@ -646,7 +646,15 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             if (!r || r.width === 0 || r.height === 0) continue;
             const txt = (el.textContent || '').trim();
             if (RE.test(txt)) {
-              const target = (el.closest('button,[role="button"],div') ?? el) as HTMLElement;
+              // CRITICO: usar APENAS button/role=button como ancestor — NAO
+              // subir pra div generic. Bug anterior: closest('div') subia pro
+              // container de TODOS os filtros, click ali fazia React reselecionar
+              // o filtro DEFAULT (Reyes), criando loop visual de "fantasma".
+              const target = (
+                el.matches('button,[role="button"]')
+                  ? el
+                  : el.closest('button,[role="button"]') ?? el
+              ) as HTMLElement;
               const tr = target.getBoundingClientRect();
               const opts: MouseEventInit = {
                 bubbles: true, cancelable: true, view: window,
@@ -734,24 +742,28 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
     let advanceClicks = 0;
     let stuckAfterAdvance = false;
+    let originalClickedThisJob = false;
     for (let attempt = 0; attempt < 5; attempt++) {
       await dismissInfoModal(page);
 
       // Sai do loop quando chegou na tela de Caption (caption + share visiveis)
       if (await isOnCaptionScreen()) break;
 
-      // Se estamos na tela de Filtros, clica "Original" antes pra (a) tirar o
-      // filtro default que IG aplica (Reyes, etc — deixa foto desbotada) e
-      // (b) sincronizar o IG antes do Avancar (botao pode estar temp disabled
-      // enquanto IG aplica filtro). Se nao estamos na tela de Filtros, no-op.
-      const clickedOriginal = await clickOriginalFilter();
-      if (clickedOriginal) {
-        await appLog({
-          source: 'driver',
-          level: 'info',
-          message: `[real] filtro "Original" aplicado pra desfazer filtro default do IG`,
-        });
-        await humanDelay(1500, 2500); // tempo pra IG aplicar
+      // Se estamos na tela de Filtros, clica "Original" UMA UNICA vez por job.
+      // Bug anterior: clickOriginalFilter rodava a cada iteracao, e se o IG
+      // resetasse pra Reyes (filtro default), o bot ficava num loop visivel
+      // de "fantasma click" disputando com o usuario.
+      if (!originalClickedThisJob) {
+        const clickedOriginal = await clickOriginalFilter();
+        if (clickedOriginal) {
+          originalClickedThisJob = true;
+          await appLog({
+            source: 'driver',
+            level: 'info',
+            message: `[real] filtro "Original" aplicado pra desfazer filtro default do IG`,
+          });
+          await humanDelay(1500, 2500); // tempo pra IG aplicar
+        }
       }
 
       const ok = await clickAdvance(attempt === 0 ? 12_000 : 6_000);
