@@ -4,6 +4,7 @@ import { prisma } from '../../prisma.js';
 import { bus } from '../../events.js';
 import { getDriver } from '../../automation/driver.js';
 import { appLog } from '../../logger.js';
+import { scheduleNextForAccount } from '../../automation/scheduler.js';
 
 export async function instagramAccountRoutes(app: FastifyInstance) {
   app.addHook('preHandler', app.authenticate);
@@ -186,6 +187,84 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     } catch {
       return reply.status(404).send({ error: 'not_found' });
     }
+  });
+
+  // Progresso por conta — agregado de jobs do dia (queued/running/retry/failed/done).
+  // Usado pra mostrar barra "5/10 ✓" e estado (rodando/concluido/sem jobs) na UI.
+  app.get('/accounts/progress', async () => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(startOfDay);
+    endOfDay.setDate(endOfDay.getDate() + 1);
+
+    const accounts = await prisma.instagramAccount.findMany({
+      orderBy: { username: 'asc' },
+      select: { id: true, username: true, status: true },
+    });
+
+    // Agrega jobs do dia por account+status numa unica query.
+    const jobs = await prisma.postJob.groupBy({
+      by: ['accountId', 'status'],
+      where: {
+        scheduledFor: { gte: startOfDay, lt: endOfDay },
+      },
+      _count: { _all: true },
+    });
+
+    const byAccount: Record<string, { done: number; queued: number; running: number; retry: number; failed: number }> = {};
+    for (const j of jobs) {
+      if (!byAccount[j.accountId]) {
+        byAccount[j.accountId] = { done: 0, queued: 0, running: 0, retry: 0, failed: 0 };
+      }
+      const slot = byAccount[j.accountId];
+      if (j.status === 'done') slot.done = j._count._all;
+      else if (j.status === 'queued') slot.queued = j._count._all;
+      else if (j.status === 'running') slot.running = j._count._all;
+      else if (j.status === 'retry') slot.retry = j._count._all;
+      else if (j.status === 'failed') slot.failed = j._count._all;
+    }
+
+    return accounts.map((a) => {
+      const t = byAccount[a.id] ?? { done: 0, queued: 0, running: 0, retry: 0, failed: 0 };
+      const totalToday = t.done + t.queued + t.running + t.retry + t.failed;
+      const pending = t.queued + t.running + t.retry;
+      let cycleState: 'idle' | 'running' | 'completed' | 'failures';
+      if (totalToday === 0) cycleState = 'idle';
+      else if (pending > 0) cycleState = 'running';
+      else if (t.failed > 0 && t.done === 0) cycleState = 'failures';
+      else cycleState = 'completed';
+      return {
+        id: a.id,
+        username: a.username,
+        status: a.status,
+        today: t,
+        totalToday,
+        cycleState,
+      };
+    });
+  });
+
+  // Reagendar ciclo: apaga jobs nao-done dessa conta + chama scheduler pra
+  // criar jobs novos. Util quando conta concluiu o ciclo do dia e Gustavo
+  // quer comecar novo ciclo manual (sem esperar scheduler natural).
+  app.post('/accounts/:id/restart-cycle', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const account = await prisma.instagramAccount.findUnique({ where: { id } });
+    if (!account) return reply.status(404).send({ error: 'not_found' });
+    // So apaga queued/retry/failed (nao toca em running/done — running pode estar
+    // processando agora; done eh historico).
+    const deleted = await prisma.postJob.deleteMany({
+      where: { accountId: id, status: { in: ['queued', 'retry', 'failed'] } },
+    });
+    // Reagenda pelo scheduler com base na campanha
+    await scheduleNextForAccount(id);
+    await appLog({
+      source: 'api',
+      level: 'info',
+      message: `Reagendar ciclo: ${deleted.count} job(s) apagado(s) e reagendados pra @${account.username}`,
+      accountId: id,
+    });
+    return { ok: true, deleted: deleted.count };
   });
 }
 

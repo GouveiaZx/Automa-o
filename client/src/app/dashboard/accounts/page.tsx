@@ -10,8 +10,30 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { AdsPowerProfile, Campaign, InstagramAccount } from '@automacao/shared';
-import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2 } from 'lucide-react';
+import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2, RotateCw } from 'lucide-react';
 import { connectSse } from '@/lib/sse';
+
+interface AccountProgress {
+  id: string;
+  username: string;
+  status: string;
+  today: { done: number; queued: number; running: number; retry: number; failed: number };
+  totalToday: number;
+  cycleState: 'idle' | 'running' | 'completed' | 'failures';
+}
+
+const CYCLE_VARIANT: Record<string, 'success' | 'warning' | 'destructive' | 'secondary' | 'default'> = {
+  completed: 'success',
+  running: 'default',
+  failures: 'warning',
+  idle: 'secondary',
+};
+const CYCLE_LABEL: Record<string, string> = {
+  completed: 'concluído',
+  running: 'rodando',
+  failures: 'falhas',
+  idle: 'sem jobs',
+};
 
 const STATUS_VARIANT: Record<string, 'success' | 'warning' | 'destructive' | 'secondary'> = {
   active: 'success',
@@ -31,25 +53,49 @@ export default function AccountsPage() {
   const [validatingId, setValidatingId] = useState<string | null>(null);
   const [bulkValidating, setBulkValidating] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<Record<string, AccountProgress>>({});
+  const [restartingId, setRestartingId] = useState<string | null>(null);
 
   async function load() {
-    const [a, c, p] = await Promise.all([
+    const [a, c, p, pg] = await Promise.all([
       api<InstagramAccount[]>('/api/accounts'),
       api<Campaign[]>('/api/campaigns'),
       api<AdsPowerProfile[]>('/api/adspower-profiles'),
+      api<AccountProgress[]>('/api/accounts/progress').catch(() => [] as AccountProgress[]),
     ]);
     setItems(a);
     setCampaigns(c);
     setProfiles(p);
+    const map: Record<string, AccountProgress> = {};
+    for (const x of pg) map[x.id] = x;
+    setProgress(map);
   }
 
   useEffect(() => {
     load();
+    const interval = setInterval(load, 15_000);
     const off = connectSse((event) => {
-      if (event.type === 'account-update') load();
+      if (event.type === 'account-update' || event.type === 'job-update') load();
     });
-    return () => off();
+    return () => {
+      clearInterval(interval);
+      off();
+    };
   }, []);
+
+  async function restartCycle(id: string, username: string) {
+    if (!confirm(`Reagendar ciclo de @${username}?\n\nIsso apaga jobs queued/retry/failed dessa conta e cria jobs novos com base na campanha.`)) return;
+    setRestartingId(id);
+    try {
+      const r = await api<{ deleted: number }>(`/api/accounts/${id}/restart-cycle`, { method: 'POST' });
+      alert(`${r.deleted} job(s) apagado(s). Ciclo reagendado.`);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao reagendar');
+    } finally {
+      setRestartingId(null);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -317,6 +363,8 @@ export default function AccountsPage() {
                 <TableHead>Campanha</TableHead>
                 <TableHead>Perfil AdsPower</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Progresso hoje</TableHead>
+                <TableHead>Ciclo</TableHead>
                 <TableHead>Falhas</TableHead>
                 <TableHead></TableHead>
               </TableRow>
@@ -351,6 +399,48 @@ export default function AccountsPage() {
                   <TableCell>
                     <Badge variant={STATUS_VARIANT[a.status] ?? 'secondary'}>{a.status}</Badge>
                   </TableCell>
+                  <TableCell>
+                    {(() => {
+                      const p = progress[a.id];
+                      if (!p || p.totalToday === 0) {
+                        return <span className="text-xs text-muted-foreground">—</span>;
+                      }
+                      const pct = Math.round((p.today.done / p.totalToday) * 100);
+                      return (
+                        <div className="space-y-1 min-w-[110px]">
+                          <div className="text-xs">
+                            <span className="font-medium">{p.today.done}</span>
+                            <span className="text-muted-foreground"> / {p.totalToday}</span>
+                            <span className="text-muted-foreground ml-1">({pct}%)</span>
+                          </div>
+                          <div className="h-1.5 w-full bg-muted rounded overflow-hidden">
+                            <div
+                              className="h-full bg-emerald-500 transition-all"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          {(p.today.retry > 0 || p.today.failed > 0) && (
+                            <div className="text-[10px] text-amber-500">
+                              {p.today.retry > 0 && `${p.today.retry} retry`}
+                              {p.today.retry > 0 && p.today.failed > 0 && ' · '}
+                              {p.today.failed > 0 && `${p.today.failed} fail`}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </TableCell>
+                  <TableCell>
+                    {(() => {
+                      const p = progress[a.id];
+                      if (!p) return <span className="text-xs text-muted-foreground">—</span>;
+                      return (
+                        <Badge variant={CYCLE_VARIANT[p.cycleState] ?? 'secondary'}>
+                          {CYCLE_LABEL[p.cycleState] ?? p.cycleState}
+                        </Badge>
+                      );
+                    })()}
+                  </TableCell>
                   <TableCell>{a.consecutiveFails}</TableCell>
                   <TableCell className="flex gap-1">
                     <Button
@@ -379,6 +469,19 @@ export default function AccountsPage() {
                         <RefreshCw className="h-4 w-4" />
                       )}
                     </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      title="Reagendar ciclo (apaga jobs queued/retry/failed e cria novos)"
+                      disabled={restartingId === a.id || !a.campaignId}
+                      onClick={() => restartCycle(a.id, a.username)}
+                    >
+                      {restartingId === a.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RotateCw className="h-4 w-4" />
+                      )}
+                    </Button>
                     {a.status === 'active' ? (
                       <Button size="icon" variant="ghost" onClick={() => setStatus(a.id, 'paused')}>
                         <Pause className="h-4 w-4" />
@@ -396,7 +499,7 @@ export default function AccountsPage() {
               ))}
               {!items.length && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={10} className="text-center text-muted-foreground py-6">
                     Nenhuma conta cadastrada.
                   </TableCell>
                 </TableRow>
