@@ -8,10 +8,13 @@ const inFlight = new Set<string>();
 const accountInFlight = new Set<string>();
 let stopped = false;
 let lastLogCleanupAt = 0;
+let lastOrphanRecoveryAt = 0;
 let lastTickAt = 0;
 let tickCount = 0;
 let lastSkipReport = 0;
 const LOG_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 1x/dia
+const ORPHAN_RECOVERY_INTERVAL_MS = 10 * 60 * 1000; // 10 min — recupera jobs travados sem precisar reiniciar worker
+const ORPHAN_THRESHOLD_MS = 30 * 60 * 1000; // job 'running' ha > 30 min eh considerado orfao
 const SKIP_REPORT_INTERVAL_MS = 5 * 60 * 1000; // 5 min entre reports de "jobs pulados pelo cap"
 const SET_RECONCILE_INTERVAL_TICKS = 12; // ~1 min em ticks de 5s
 
@@ -31,25 +34,39 @@ export function getWorkerState() {
   };
 }
 
-export async function startWorker(): Promise<void> {
-  // Recovery de jobs orfaos: se o processo crashou enquanto um job estava 'running'
-  // ele fica preso pra sempre. Aqui devolvemos ao 'queued' qualquer job que ficou
-  // 'running' por mais de 30 min (post real completo dura < 5 min, com folga).
-  const ORPHAN_THRESHOLD_MS = 30 * 60 * 1000;
-  const orphans = await prisma.postJob.updateMany({
-    where: {
-      status: 'running',
-      startedAt: { lte: new Date(Date.now() - ORPHAN_THRESHOLD_MS) },
-    },
+// Recupera jobs travados em 'running' ha mais de 30 min. Roda no startup +
+// periodicamente (a cada 10 min) durante a vida do worker, pra cobrir 2 cenarios:
+// 1. Worker crashou no meio de um job (recupera no proximo startup)
+// 2. Driver pendurou (Playwright zumbi, AdsPower fechou perfil sem callback)
+//    e o worker continua rodando — recovery periodico destrava sem reiniciar.
+async function recoverOrphans(): Promise<string[]> {
+  const cutoff = new Date(Date.now() - ORPHAN_THRESHOLD_MS);
+  // Pega IDs primeiro pra poder limpar do Set inFlight depois
+  const orphanRows = await prisma.postJob.findMany({
+    where: { status: 'running', startedAt: { lte: cutoff } },
+    select: { id: true, accountId: true },
+  });
+  if (orphanRows.length === 0) return [];
+  await prisma.postJob.updateMany({
+    where: { status: 'running', startedAt: { lte: cutoff } },
     data: { status: 'queued', startedAt: null },
   });
-  if (orphans.count > 0) {
-    await appLog({
-      source: 'worker',
-      level: 'warn',
-      message: `Recovery: ${orphans.count} job(s) orfaos voltaram para 'queued' (provavel crash anterior)`,
-    });
+  // Limpa do Set local (se estavam) — evita race com novo run pelo lock atomico
+  for (const o of orphanRows) {
+    inFlight.delete(o.id);
+    accountInFlight.delete(o.accountId);
   }
+  await appLog({
+    source: 'worker',
+    level: 'warn',
+    message: `Recovery: ${orphanRows.length} job(s) orfao(s) voltaram para 'queued' (running ha > 30min)`,
+  });
+  return orphanRows.map((o) => o.id);
+}
+
+export async function startWorker(): Promise<void> {
+  // Recovery de jobs orfaos no startup (cobre crash do worker)
+  await recoverOrphans();
 
   // Auto-elevacao do MAX_ACTIVE_ACCOUNTS: se o setting esta com o valor padrao
   // antigo "1" (vindo do seed da Etapa 4 que era pra teste progressivo) MAS o
@@ -188,6 +205,14 @@ async function processOnce(): Promise<void> {
         if (n > 0) console.log(`[worker] cleanup: ${n} log(s) antigo(s) apagado(s)`);
       })
       .catch((e) => console.error('[worker] cleanup logs falhou:', e));
+  }
+
+  // Recovery periodico de jobs orfaos (a cada 10 min). Cobre caso de driver
+  // travado (Playwright pendurado, AdsPower fechou perfil sem callback) sem
+  // precisar reiniciar o worker.
+  if (Date.now() - lastOrphanRecoveryAt > ORPHAN_RECOVERY_INTERVAL_MS) {
+    lastOrphanRecoveryAt = Date.now();
+    void recoverOrphans().catch((e) => console.error('[worker] recovery falhou:', e));
   }
 
   // Reconcile defensivo (a cada N ticks): valida inFlight contra DB.
