@@ -949,28 +949,50 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
     // Step 7: aguarda confirmação de sucesso REAL (upload terminou no servidor IG).
     //
-    // Bug antigo: confiava em "Criar novo post" sumir, mas IG mostra tela "Sharing"
-    // com spinner DEPOIS do dialog sumir — sistema fechava antes do upload terminar.
+    // Apos clicar Compartilhar, IG passa por estados em sequencia:
+    //   1. Tela "Sharing"/"Compartilhando" com spinner
+    //   2. Dialog "Post compartilhado" / "Post shared" com botao "Concluir"
+    //   3. Dialog fecha sozinho ou usuario clica "Concluir"
     //
-    // Agora: aguarda TODAS as condicoes simultaneas:
-    //   - Dialog "Criar novo post" nao esta visivel
-    //   - Texto "Sharing"/"Compartilhando"/"Enviando" nao esta visivel
-    //   - Sem spinner/progressbar ativo dentro de qualquer dialog
+    // Confirmado via Playwright em teste end-to-end: o dialog "Post compartilhado"
+    // aparece ~3s apos clicar Compartilhar e fica visivel ate o usuario clicar
+    // Concluir. Esse eh o sinal POSITIVO de sucesso — quando aparece, post foi
+    // publicado de fato no servidor IG.
     //
-    // Timeout: 90s pra video (reel pode demorar pra processar+upload),
-    // 30s pra foto. Em caso de timeout, checa URL: se mudou pra /reels/, /p/,
-    // ou perfil → considera OK (IG redirecionou apos sucesso).
+    // Estrategia:
+    //   1. Detecao POSITIVA: dialog "Post compartilhado" aparece → success
+    //      (clica "Concluir" pra fechar e segue)
+    //   2. Detecao NEGATIVA (fallback): dialog Criar novo post sumiu E
+    //      sem "Sharing"/spinner ativo → success
+    //
+    // Timeout: 90s pra video (reel demora processar+upload), 30s pra foto.
     const finalTimeout = isVideo ? 90_000 : 30_000;
     let confirmed = false;
     try {
       await page.waitForFunction(
         () => {
-          // 1. Dialog "Criar novo post" ainda aberto?
+          // 1. POSITIVO: dialog "Post compartilhado" visivel? Significa
+          //    que IG confirmou publicacao com sucesso.
+          const successDialog = Array.from(document.querySelectorAll('div[role="dialog"]')).find((d) => {
+            const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
+            const txt = (d.textContent || '').toLowerCase();
+            return (
+              lbl.includes('post compartilhado') ||
+              lbl.includes('post shared') ||
+              lbl.includes('publicação compartilhada') ||
+              txt.includes('seu post foi compartilhado') ||
+              txt.includes('your post has been shared') ||
+              txt.includes('sua publicação foi compartilhada')
+            );
+          });
+          if (successDialog) return true; // SUCESSO CONFIRMADO
+
+          // 2. NEGATIVO (fallback): se nao apareceu "Post compartilhado" mas
+          //    o dialog Criar novo post sumiu E nao tem mais Sharing/spinner.
           const stillOnCreate = document.querySelector(
-            'div[role="dialog"] [aria-label="Criar novo post"]'
+            'div[role="dialog"][aria-label="Criar novo post"], div[role="dialog"][aria-label="Create new post"]'
           );
           if (stillOnCreate) return false;
-          // Tambem checa header com texto
           const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
           for (const d of dialogs) {
             const headers = d.querySelectorAll('header, h1, h2');
@@ -980,7 +1002,6 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
               }
             }
           }
-          // 2. Tela "Sharing"/"Compartilhando"/"Enviando" visivel?
           const sharingTexts = ['Sharing', 'Compartilhando', 'Enviando', 'Publicando', 'Posting'];
           const allTextEls = Array.from(document.querySelectorAll('div, span, header'));
           for (const t of sharingTexts) {
@@ -991,7 +1012,6 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
               return false;
             }
           }
-          // 3. Spinner ativo dentro de dialog?
           const spinners = document.querySelectorAll(
             'div[role="dialog"] [role="progressbar"], div[role="dialog"] svg[aria-label*="Carregando" i], div[role="dialog"] svg[aria-label*="Loading" i]'
           );
@@ -1005,6 +1025,23 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         { timeout: finalTimeout, polling: 1000 }
       );
       confirmed = true;
+      // Apos confirmar, tenta clicar "Concluir" / "Done" pra fechar o
+      // dialog de sucesso (limpa estado pro proximo job).
+      await page.evaluate(() => {
+        const RE = /^(Concluir|Concluído|Done|OK|Ok|Pronto)$/i;
+        const all = Array.from(document.querySelectorAll('button, [role="button"], a'));
+        for (const el of all) {
+          const r = (el as HTMLElement).getBoundingClientRect?.();
+          if (!r || r.width === 0 || r.height === 0) continue;
+          const txt = (el.textContent || '').trim();
+          if (RE.test(txt)) {
+            (el as HTMLElement).click();
+            return true;
+          }
+        }
+        return false;
+      }).catch(() => undefined);
+      await humanDelay(800, 1500);
     } catch {
       // Timeout — confere se URL mudou (IG redireciona apos publicar com sucesso)
       const url = page.url();
