@@ -475,15 +475,23 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // (so pra videos). Precisa clicar OK pra prosseguir, senao trava na tela "Cortar".
     await dismissInfoModal(page);
 
-    // Helper: tenta clicar Avançar/Next cobrindo button, [role=button], <a> e <div>.
-    // 12 selectors (8 com :has-text + 4 com aria-label) + 3 estrategias de click
-    // (normal -> force -> JS evaluate). Cobre IG renderizando botao como elemento
-    // sem texto literal (so aria-label) ou com overlay invisivel bloqueando hit-test.
+    // Helper: tenta clicar Avançar/Next com 4 estrategias em sequencia.
+    //
+    // Selectors: 12 com escopo `div[role="dialog"]` (caso comum) + 8 SEM escopo
+    // (caso IG novo onde a tela "Editar" nao esta dentro de role=dialog).
+    //
+    // Estrategias de click:
+    //   1. Normal (auto-wait + hit-testing) — cobre 90% dos casos
+    //   2. Force (skip hit-testing) — cobre overlay invisivel
+    //   3. JS evaluate no elemento (sobe pra ancestor clickable)
+    //   4. JS global search no DOM inteiro — busca por textContent OU aria-label
+    //      "avançar/next" em qualquer elemento visivel, sobe pra ancestor
+    //      clickable e dispara click. Cobre o caso de selectors CSS nao baterem.
     const clickAdvance = async (timeoutMs: number) => {
       const btn = await findAny(
         page,
         [
-          // texto literal
+          // Scope: dialog (caso comum)
           'div[role="dialog"] button:has-text("Avançar")',
           'div[role="dialog"] button:has-text("Next")',
           'div[role="dialog"] [role="button"]:has-text("Avançar")',
@@ -492,41 +500,66 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
           'div[role="dialog"] a:has-text("Next")',
           'div[role="dialog"] div:has-text("Avançar"):not(:has(*))',
           'div[role="dialog"] div:has-text("Next"):not(:has(*))',
-          // aria-label (cobre IG renderizando texto via CSS pseudo-element)
           'div[role="dialog"] [aria-label="Avançar"]',
           'div[role="dialog"] [aria-label="Next"]',
           'div[role="dialog"] [aria-label*="vançar" i]',
           'div[role="dialog"] [aria-label*="next" i]',
+          // Scope: GLOBAL (caso a tela nao esteja dentro de role=dialog)
+          'button:has-text("Avançar")',
+          'button:has-text("Next")',
+          '[role="button"]:has-text("Avançar")',
+          '[role="button"]:has-text("Next")',
+          'a:has-text("Avançar")',
+          'a:has-text("Next")',
+          '[aria-label="Avançar"]',
+          '[aria-label="Next"]',
         ],
         timeoutMs
       );
-      if (!btn) return false;
 
-      // Estrategia 1: click normal (auto-wait + hit-testing do Playwright)
-      try {
-        await btn.click({ timeout: 5000 });
-        return true;
-      } catch {
-        /* tenta estrategia 2 */
+      // Estrategia 1+2+3: usa o btn encontrado pelo findAny, se houver
+      if (btn) {
+        try {
+          await btn.click({ timeout: 5000 });
+          return true;
+        } catch { /* estrategia 2 */ }
+        try {
+          await btn.click({ force: true, timeout: 3000 });
+          return true;
+        } catch { /* estrategia 3 */ }
+        try {
+          await btn.evaluate((el: HTMLElement) => {
+            const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
+            target.click();
+          });
+          return true;
+        } catch { /* fallthrough pra estrategia 4 */ }
       }
-      // Estrategia 2: force click (skip hit-testing, ignora overlay invisivel)
+
+      // Estrategia 4: JS global search no DOM inteiro. Ignora qualquer
+      // problema de escopo/selector CSS — busca por texto ou aria-label
+      // "avançar/next" em qualquer elemento visivel.
       try {
-        await btn.click({ force: true, timeout: 3000 });
-        return true;
-      } catch {
-        /* tenta estrategia 3 */
-      }
-      // Estrategia 3: JS .click() direto no DOM. Se o elemento for filho de
-      // outro clickable (ex: <span> dentro de <button>), sobe pra ancestor.
-      try {
-        await btn.evaluate((el: HTMLElement) => {
-          const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
-          target.click();
+        const clickedGlobal = await page.evaluate(() => {
+          const all = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'));
+          const TARGETS = new Set(['avançar', 'avancar', 'next']);
+          for (const el of all) {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const txt = (el.textContent?.trim() || '').toLowerCase();
+            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+            if (TARGETS.has(txt) || TARGETS.has(aria)) {
+              const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
+              target.click();
+              return true;
+            }
+          }
+          return false;
         });
-        return true;
-      } catch {
-        return false;
-      }
+        if (clickedGlobal) return true;
+      } catch { /* falhou tudo */ }
+
+      return false;
     };
 
     // Step 3-4: loop adaptativo de "Avancar". O IG tem fluxos diferentes:
@@ -575,13 +608,13 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         // Tenta fechar modal e clicar de novo
         await dismissInfoModal(page);
         if (!(await clickAdvance(4_000))) {
-          // Nao achou Avancar — falha so se nem o primeiro click rolou
+          // Nao achou Avancar mesmo apos 4 estrategias e retry — captura
+          // estado atual pra investigar e falha (so se for o 1o click;
+          // senao deixa Step 5/6 tentarem).
           if (advanceClicks === 0) {
-            const dbg = await captureDebug(page, 'no-advance-1');
+            const dbg = await captureDebug(page, 'no-advance-1-all-strategies-failed');
             return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
           }
-          // Ja clicou pelo menos 1x — provavel que ja esta na tela final.
-          // Sai do loop e deixa Step 5 (caption) tentar.
           stuckAfterAdvance = true;
           break;
         }
