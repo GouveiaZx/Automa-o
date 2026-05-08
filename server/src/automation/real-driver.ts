@@ -748,25 +748,86 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       await humanDelay(2000, 3000);
       shareBtn = await findAny(page, shareSelectors, 6000);
     }
-    if (!shareBtn) {
-      // Ultimo fallback: getByRole com regex ampla (pega elementos sem
-      // texto exato mas com aria-label "Compartilhar")
-      shareBtn = await page
-        .getByRole('button', { name: /^(Compartilhar|Share|Publicar|Post|Enviar)$/i })
-        .first()
-        .isVisible({ timeout: 1000 })
-        .then((v) => (v ? page.getByRole('button', { name: /^(Compartilhar|Share|Publicar|Post|Enviar)$/i }).first() : null))
-        .catch(() => null);
-    }
-    if (!shareBtn) {
+
+    // Helper de click multi-estrategia (mesmo padrao do clickAdvance):
+    // 1. Click normal -> 2. Force -> 3. JS evaluate no btn ->
+    // 4. JS GLOBAL search com sequencia de eventos real (pointer + mouse + click).
+    const clickShareMultiStrategy = async (): Promise<boolean> => {
+      if (shareBtn) {
+        try {
+          await shareBtn.click({ timeout: 10000 });
+          return true;
+        } catch { /* estrategia 2 */ }
+        try {
+          await shareBtn.click({ force: true, timeout: 5000 });
+          return true;
+        } catch { /* estrategia 3 */ }
+        try {
+          await shareBtn.evaluate((el: HTMLElement) => {
+            const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
+            target.click();
+          });
+          return true;
+        } catch { /* estrategia 4 */ }
+      }
+
+      // Estrategia 4: JS global search no DOM (incluindo Shadow DOM e iframes
+      // mesmo-origem) com regex Compartilhar/Share/Publicar/Post/Enviar +
+      // sequencia real de eventos (pointer + mouse + click).
+      try {
+        return await page.evaluate(() => {
+          const RE = /^\s*(compartilhar|share|publicar|post|enviar)\s*$/i;
+          function collectAll(root: Document | ShadowRoot): Element[] {
+            const result: Element[] = [];
+            for (const el of Array.from(root.querySelectorAll('*'))) {
+              result.push(el);
+              const sr = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+              if (sr) result.push(...collectAll(sr));
+            }
+            return result;
+          }
+          const elements: Element[] = collectAll(document);
+          for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+            try {
+              const doc = (iframe as HTMLIFrameElement).contentDocument;
+              if (doc) elements.push(...collectAll(doc));
+            } catch { /* cross-origin */ }
+          }
+          for (const el of elements) {
+            const r = (el as HTMLElement).getBoundingClientRect?.();
+            if (!r || r.width === 0 || r.height === 0) continue;
+            const txt = (el.textContent || '').replace(/[​-‍﻿ ]/g, ' ').trim();
+            const aria = (el.getAttribute('aria-label') || '').trim();
+            if (RE.test(txt) || RE.test(aria)) {
+              const target = (el.closest('button,[role="button"],a') ?? el) as HTMLElement;
+              const tr = target.getBoundingClientRect();
+              const x = tr.x + tr.width / 2;
+              const y = tr.y + tr.height / 2;
+              const opts: MouseEventInit = {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, button: 0, buttons: 1,
+              };
+              try {
+                target.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mousedown', opts));
+                target.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mouseup', opts));
+              } catch { /* PointerEvent indisponivel */ }
+              target.dispatchEvent(new MouseEvent('click', opts));
+              target.click();
+              return true;
+            }
+          }
+          return false;
+        });
+      } catch {
+        return false;
+      }
+    };
+
+    if (!(await clickShareMultiStrategy())) {
       const dbg = await captureDebug(page, 'no-share-btn');
       return { ok: false, reason: `share_button_not_found ${dbg.screenshot ?? ''}` };
-    }
-    try {
-      await shareBtn.click({ timeout: 10000 });
-    } catch {
-      const dbg = await captureDebug(page, 'share-click-fail');
-      return { ok: false, reason: `share_button_click_failed ${dbg.screenshot ?? ''}` };
     }
 
     // Step 6.5: APOS clicar Compartilhar o IG pode mostrar popup informativo
@@ -892,9 +953,41 @@ export const realDriver: AutomationDriver = {
         return { ok: false, reason: 'adspower_no_ws_endpoint' };
       }
 
-      const browser = await chromium.connectOverCDP(wsEndpoint, {
-        slowMo: env.PLAYWRIGHT_SLOW_MO_MS || undefined,
-      });
+      // AdsPower retorna o ws endpoint mas as vezes o servidor WebSocket
+      // ainda esta inicializando. Da uma folga antes de conectar pra
+      // evitar timeout em "ws connecting". Sem isso, com 8 perfis abrindo
+      // em paralelo, alguns dao Timeout 30000ms exceeded.
+      await new Promise((r) => setTimeout(r, 1500));
+
+      // Retry de connectOverCDP com timeout maior — ws pode estar lento
+      // se hardware sobrecarregado (8+ perfis paralelos).
+      let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | null = null;
+      let lastErr: unknown = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          browser = await chromium.connectOverCDP(wsEndpoint, {
+            slowMo: env.PLAYWRIGHT_SLOW_MO_MS || undefined,
+            timeout: 60_000, // 60s (era 30s default)
+          });
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (i < 2) {
+            await new Promise((r) => setTimeout(r, 2000 * (i + 1))); // backoff 2s, 4s
+          }
+        }
+      }
+      if (!browser) {
+        const msg = lastErr instanceof Error ? lastErr.message : 'unknown';
+        await appLog({
+          source: 'driver',
+          level: 'error',
+          message: `[real] connectOverCDP falhou apos 3 tentativas: ${msg}`,
+        });
+        await adsPowerClient.stopBrowser(adsPowerId).catch(() => undefined);
+        return { ok: false, reason: `cdp_connect_timeout: ${msg}` };
+      }
+
       const context = browser.contexts()[0] ?? (await browser.newContext());
       const page = context.pages()[0] ?? (await context.newPage());
       page.setDefaultTimeout(30_000);
