@@ -15,8 +15,11 @@ let lastSkipReport = 0;
 const LOG_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 1x/dia
 const ORPHAN_RECOVERY_INTERVAL_MS = 10 * 60 * 1000; // 10 min — recupera jobs travados sem precisar reiniciar worker
 const ORPHAN_THRESHOLD_MS = 30 * 60 * 1000; // job 'running' ha > 30 min eh considerado orfao
+const STUCK_QUEUED_DIAGNOSE_INTERVAL_MS = 2 * 60 * 1000; // 2 min — diagnostica jobs queued presos
+const STUCK_QUEUED_THRESHOLD_MS = 10 * 60 * 1000; // job queued ha > 10min apos scheduledFor eh "preso"
 const SKIP_REPORT_INTERVAL_MS = 5 * 60 * 1000; // 5 min entre reports de "jobs pulados pelo cap"
 const SET_RECONCILE_INTERVAL_TICKS = 12; // ~1 min em ticks de 5s
+let lastStuckDiagnoseAt = 0;
 
 // Estado exportado pra endpoint de diagnostico
 export function getWorkerState() {
@@ -32,6 +35,60 @@ export function getWorkerState() {
       keepProfilesOpen: env.KEEP_PROFILES_OPEN,
     },
   };
+}
+
+// Diagnostica jobs queued ha > 10 min apos scheduledFor e popula errorMessage
+// com motivo provavel. Sem isso, o job fica preso na fila sem feedback visual.
+//
+// Causas comuns:
+//   - Conta nao-active (paused, needs_login, error) — bloqueada pelo filtro do worker
+//   - Conta sem perfil AdsPower vinculado
+//   - Cap MAX_ACTIVE_ACCOUNTS limitando (conta fora do top N alfabetico)
+//   - accountInFlight bloqueado (outro job da mesma conta rodando ha muito tempo)
+async function diagnoseStuckQueued(): Promise<void> {
+  const cutoff = new Date(Date.now() - STUCK_QUEUED_THRESHOLD_MS);
+  const stuck = await prisma.postJob.findMany({
+    where: {
+      status: 'queued',
+      scheduledFor: { lte: cutoff },
+    },
+    include: {
+      account: { select: { id: true, username: true, status: true, adsPowerProfileId: true } },
+    },
+    take: 50,
+  });
+  if (stuck.length === 0) return;
+
+  const cap = await getActiveAccountCap();
+  const allowedIds = cap !== null ? await getAllowedAccountIds(cap) : null;
+
+  for (const job of stuck) {
+    let reason: string | null = null;
+    const acc = job.account;
+    if (!acc) {
+      reason = 'conta nao encontrada (deletada?)';
+    } else if (acc.status === 'paused') {
+      reason = `conta @${acc.username} esta PAUSADA — reative em Contas Instagram`;
+    } else if (acc.status === 'needs_login') {
+      reason = `conta @${acc.username} deslogou do Instagram — abra AdsPower e relogue manual`;
+    } else if (acc.status === 'error') {
+      reason = `conta @${acc.username} esta em ERRO — verifique logs`;
+    } else if (!acc.adsPowerProfileId) {
+      reason = `conta @${acc.username} sem perfil AdsPower vinculado — vincule em Contas Instagram`;
+    } else if (allowedIds && !allowedIds.has(acc.id)) {
+      reason = `cap MAX_ACTIVE_ACCOUNTS=${cap} — conta @${acc.username} fora do top ${cap}. Aumente em Configuracoes`;
+    } else if (accountInFlight.has(acc.id)) {
+      reason = `outro job da mesma conta @${acc.username} rodando — aguarde ou apague o running travado`;
+    }
+
+    // So atualiza se tem reason novo (evita rewrite desnecessario)
+    if (reason && job.errorMessage !== reason) {
+      await prisma.postJob.update({
+        where: { id: job.id },
+        data: { errorMessage: reason },
+      }).catch(() => undefined);
+    }
+  }
 }
 
 // Recupera jobs travados em 'running' ha mais de 30 min. Roda no startup +
@@ -213,6 +270,15 @@ async function processOnce(): Promise<void> {
   if (Date.now() - lastOrphanRecoveryAt > ORPHAN_RECOVERY_INTERVAL_MS) {
     lastOrphanRecoveryAt = Date.now();
     void recoverOrphans().catch((e) => console.error('[worker] recovery falhou:', e));
+  }
+
+  // Diagnostico periodico de jobs queued presos (a cada 2 min). Popula
+  // errorMessage com motivo provavel pra Gustavo ver na coluna "Erro" da
+  // fila — sem isso o job fica queued indefinitivamente sem indicacao
+  // de por que nao roda.
+  if (Date.now() - lastStuckDiagnoseAt > STUCK_QUEUED_DIAGNOSE_INTERVAL_MS) {
+    lastStuckDiagnoseAt = Date.now();
+    void diagnoseStuckQueued().catch((e) => console.error('[worker] diagnose stuck falhou:', e));
   }
 
   // Reconcile defensivo (a cada N ticks): valida inFlight contra DB.
