@@ -3,7 +3,7 @@ import { scheduleJobSchema, scheduleBulkSchema, scheduleBulkMultiSchema } from '
 import { prisma } from '../../prisma.js';
 import { bus } from '../../events.js';
 import { appLog } from '../../logger.js';
-import { nextSlots } from '../../automation/scheduler.js';
+import { nextSlots, clampToWindow } from '../../automation/scheduler.js';
 
 // Fisher-Yates shuffle in-place. Usado no bulk pra ordem aleatoria de midias
 // (mistura foto + video pra ficar mais natural, em vez de postar tudo em
@@ -150,7 +150,13 @@ export async function jobRoutes(app: FastifyInstance) {
           })();
           return medias.map((_, i) => {
             const offset = medias.length === 1 ? 0 : (windowMs / medias.length) * i;
-            return new Date(now + offset);
+            const t = new Date(now + offset);
+            // Respeita janela da campanha se houver — joga pro proximo windowStart
+            // se cair fora. Sem isso, jobs eram agendados em horarios proibidos
+            // (ex: 02:13 numa campanha 08:00-22:00).
+            return account.campaign
+              ? clampToWindow(t, account.campaign.windowStart, account.campaign.windowEnd)
+              : t;
           });
         })();
 
@@ -246,7 +252,11 @@ export async function jobRoutes(app: FastifyInstance) {
             const offset = medias.length === 1 ? 0 : (windowMs / medias.length) * i;
             // Jitter pra nao postar todas no mesmo segundo entre contas
             const accountJitter = Math.floor(Math.random() * 60_000);
-            return new Date(now + offset + accountJitter);
+            const t = new Date(now + offset + accountJitter);
+            // Clampa pra janela da campanha (ver bulk single — mesmo motivo)
+            return account.campaign
+              ? clampToWindow(t, account.campaign.windowStart, account.campaign.windowEnd)
+              : t;
           });
 
       // Embaralha midias POR CONTA — cada conta posta na ordem dela

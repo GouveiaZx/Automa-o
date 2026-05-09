@@ -985,30 +985,27 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
     // Step 7: aguarda confirmação de sucesso REAL (upload terminou no servidor IG).
     //
-    // Apos clicar Compartilhar, IG passa por estados em sequencia:
-    //   1. Tela "Sharing"/"Compartilhando" com spinner
-    //   2. Dialog "Post compartilhado" / "Post shared" com botao "Concluir"
-    //   3. Dialog fecha sozinho ou usuario clica "Concluir"
+    // CRITICO — fallback negativo REMOVIDO. Bug reportado pelo Gustavo:
+    // perfis com "7/31 done" no painel mas IG so tinha 2 posts reais. Causa:
+    // o fallback antigo marcava success quando dialog "Criar novo post" sumia
+    // (sem ter de fato postado — IG redirecionou pra login, fechou modal de
+    // erro, perfil deslogou, etc).
     //
-    // Confirmado via Playwright em teste end-to-end: o dialog "Post compartilhado"
-    // aparece ~3s apos clicar Compartilhar e fica visivel ate o usuario clicar
-    // Concluir. Esse eh o sinal POSITIVO de sucesso — quando aparece, post foi
-    // publicado de fato no servidor IG.
+    // Agora SOMENTE 2 sinais POSITIVOS marcam success:
+    //   1. Dialog aria-label="Post compartilhado" / "Post shared"
+    //      com texto "Seu post foi compartilhado"
+    //   2. URL mudou pra /p/<id>, /reel/<id> ou redirect explicito
     //
-    // Estrategia:
-    //   1. Detecao POSITIVA: dialog "Post compartilhado" aparece → success
-    //      (clica "Concluir" pra fechar e segue)
-    //   2. Detecao NEGATIVA (fallback): dialog Criar novo post sumiu E
-    //      sem "Sharing"/spinner ativo → success
-    //
-    // Timeout: 90s pra video (reel demora processar+upload), 30s pra foto.
+    // Se NENHUMA detectada em 90s/30s → falha (job vira retry/failed).
+    // Trade-off aceito: melhor falso negativo (retry) que falso positivo
+    // (perde controle de quantos posts realmente sairam).
+    const beforeShareUrl = page.url();
     const finalTimeout = isVideo ? 90_000 : 30_000;
     let confirmed = false;
     try {
       await page.waitForFunction(
-        () => {
-          // 1. POSITIVO: dialog "Post compartilhado" visivel? Significa
-          //    que IG confirmou publicacao com sucesso.
+        (urlBefore: string) => {
+          // SINAL 1: dialog "Post compartilhado" / "Post shared" visivel
           const successDialog = Array.from(document.querySelectorAll('div[role="dialog"]')).find((d) => {
             const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
             const txt = (d.textContent || '').toLowerCase();
@@ -1021,43 +1018,17 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
               txt.includes('sua publicação foi compartilhada')
             );
           });
-          if (successDialog) return true; // SUCESSO CONFIRMADO
+          if (successDialog) return 'dialog';
 
-          // 2. NEGATIVO (fallback): se nao apareceu "Post compartilhado" mas
-          //    o dialog Criar novo post sumiu E nao tem mais Sharing/spinner.
-          const stillOnCreate = document.querySelector(
-            'div[role="dialog"][aria-label="Criar novo post"], div[role="dialog"][aria-label="Create new post"]'
-          );
-          if (stillOnCreate) return false;
-          const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
-          for (const d of dialogs) {
-            const headers = d.querySelectorAll('header, h1, h2');
-            for (const h of headers) {
-              if (/Criar novo post|Create new post/i.test(h.textContent?.trim() || '')) {
-                return false;
-              }
-            }
+          // SINAL 2: URL mudou pra um post (IG redireciona apos publicar)
+          const url = location.href;
+          if (url !== urlBefore) {
+            if (/\/(p|reel|reels)\//.test(url)) return 'url';
           }
-          const sharingTexts = ['Sharing', 'Compartilhando', 'Enviando', 'Publicando', 'Posting'];
-          const allTextEls = Array.from(document.querySelectorAll('div, span, header'));
-          for (const t of sharingTexts) {
-            if (allTextEls.some((el) => {
-              const txt = el.textContent?.trim() || '';
-              return txt === t && (el as HTMLElement).offsetParent !== null;
-            })) {
-              return false;
-            }
-          }
-          const spinners = document.querySelectorAll(
-            'div[role="dialog"] [role="progressbar"], div[role="dialog"] svg[aria-label*="Carregando" i], div[role="dialog"] svg[aria-label*="Loading" i]'
-          );
-          for (const s of spinners) {
-            const r = (s as HTMLElement).getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) return false;
-          }
-          return true;
+
+          return false;
         },
-        undefined,
+        beforeShareUrl,
         { timeout: finalTimeout, polling: 1000 }
       );
       confirmed = true;
@@ -1079,31 +1050,16 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       }).catch(() => undefined);
       await humanDelay(800, 1500);
     } catch {
-      // Timeout — confere se URL mudou (IG redireciona apos publicar com sucesso)
-      const url = page.url();
-      const successUrl = /\/(reels?|p\/|stories\/highlights|[^/]+\/?$)/.test(url) && !url.includes('/create');
-      if (successUrl) {
-        confirmed = true;
-      } else {
-        // Ultima checagem: dialog "Criar novo post" ainda visivel?
-        const stillOpen = await page
-          .locator('div[role="dialog"]:has-text("Criar novo post"), div[role="dialog"]:has-text("Create new post")')
-          .first()
-          .isVisible({ timeout: 1500 })
-          .catch(() => false);
-        // Tambem checa se ainda tem "Sharing" visivel
-        const stillSharing = await page
-          .getByText(/^(Sharing|Compartilhando|Enviando|Publicando|Posting)$/)
-          .first()
-          .isVisible({ timeout: 1500 })
-          .catch(() => false);
-        confirmed = !stillOpen && !stillSharing;
-      }
+      // Timeout sem ver dialog OU URL mudar — assume FALHA.
+      // Antes tinha fallback negativo aqui (dialog sumiu = success). Removido
+      // pra evitar falso positivo: dialog pode sumir por outros motivos
+      // (login expirou, modal de erro, perfil fechou) sem ter postado.
+      confirmed = false;
     }
 
     if (!confirmed) {
-      const dbg = await captureDebug(page, 'post-uncertain');
-      return { ok: false, reason: `post_not_confirmed ${dbg.screenshot ?? ''}` };
+      const dbg = await captureDebug(page, 'share-unconfirmed');
+      return { ok: false, reason: `share_unconfirmed ${dbg.screenshot ?? ''}` };
     }
     await humanDelay(2000, 3500);
     return { ok: true };

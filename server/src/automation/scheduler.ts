@@ -20,7 +20,7 @@ function timeOnDate(hhmm: string, base: Date): Date {
  * Próximo horário válido dentro da janela da campanha.
  * Se o candidato estiver fora da janela, joga para o início da janela do próximo dia.
  */
-function clampToWindow(
+export function clampToWindow(
   candidate: Date,
   windowStart: string,
   windowEnd: string
