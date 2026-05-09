@@ -97,6 +97,41 @@ export default function AccountsPage() {
     }
   }
 
+  const [bulkRestarting, setBulkRestarting] = useState(false);
+  const [bulkRestartProgress, setBulkRestartProgress] = useState<{ done: number; total: number } | null>(null);
+
+  async function bulkRestartCycle() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!confirm(`Reagendar ciclo de ${ids.length} conta${ids.length > 1 ? 's' : ''} selecionada${ids.length > 1 ? 's' : ''}?\n\nIsso apaga jobs queued/retry/failed dessas contas e cria jobs novos com base nas campanhas.`)) return;
+    setBulkRestarting(true);
+    setBulkRestartProgress({ done: 0, total: ids.length });
+    let totalDeleted = 0;
+    const failures: string[] = [];
+    let done = 0;
+    // Processa serialmente pra nao floodar o scheduler nem gerar SSE storm
+    for (const id of ids) {
+      const acc = items.find((x) => x.id === id);
+      try {
+        const r = await api<{ deleted: number }>(`/api/accounts/${id}/restart-cycle`, { method: 'POST' });
+        totalDeleted += r.deleted;
+      } catch (err) {
+        failures.push(`@${acc?.username ?? id}: ${err instanceof Error ? err.message : 'erro'}`);
+      }
+      done++;
+      setBulkRestartProgress({ done, total: ids.length });
+    }
+    setBulkRestarting(false);
+    setBulkRestartProgress(null);
+    setSelected(new Set());
+    if (failures.length > 0) {
+      alert(`${ids.length - failures.length} de ${ids.length} reagendadas. ${totalDeleted} job(s) apagado(s).\n\nFalhas:\n${failures.join('\n')}`);
+    } else {
+      alert(`${ids.length} conta(s) reagendada(s). ${totalDeleted} job(s) apagado(s).`);
+    }
+    load();
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -331,12 +366,26 @@ export default function AccountsPage() {
                   size="sm"
                   variant="outline"
                   onClick={bulkValidate}
-                  disabled={bulkValidating}
+                  disabled={bulkValidating || bulkRestarting}
                 >
                   {bulkValidating ? (
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Validando {selected.size}...</>
                   ) : (
                     <><CheckCircle2 className="h-4 w-4 mr-2" /> Validar {selected.size} selecionada{selected.size > 1 ? 's' : ''}</>
+                  )}
+                </Button>
+              )}
+              {selected.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={bulkRestartCycle}
+                  disabled={bulkRestarting || bulkValidating}
+                >
+                  {bulkRestarting && bulkRestartProgress ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Reagendando {bulkRestartProgress.done}/{bulkRestartProgress.total}...</>
+                  ) : (
+                    <><RotateCw className="h-4 w-4 mr-2" /> Reagendar {selected.size} ciclo{selected.size > 1 ? 's' : ''}</>
                   )}
                 </Button>
               )}
