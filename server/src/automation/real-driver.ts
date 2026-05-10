@@ -985,53 +985,148 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
     // Step 7: aguarda confirmação de sucesso REAL (upload terminou no servidor IG).
     //
-    // CRITICO — fallback negativo REMOVIDO. Bug reportado pelo Gustavo:
-    // perfis com "7/31 done" no painel mas IG so tinha 2 posts reais. Causa:
-    // o fallback antigo marcava success quando dialog "Criar novo post" sumia
-    // (sem ter de fato postado — IG redirecionou pra login, fechou modal de
-    // erro, perfil deslogou, etc).
+    // CRITICO — fallback negativo REMOVIDO (bug do Gustavo: 7/31 "done"
+    // mas IG so com 2 posts reais). Agora trabalha com 3 estados em vez de 2:
     //
-    // Agora SOMENTE 2 sinais POSITIVOS marcam success:
-    //   1. Dialog aria-label="Post compartilhado" / "Post shared"
-    //      com texto "Seu post foi compartilhado"
-    //   2. URL mudou pra /p/<id>, /reel/<id> ou redirect explicito
+    //   SUCCESS (positivo final → confirmed = true):
+    //     1. Dialog aria-label "Post compartilhado" / "Post shared"
+    //        ou texto "Seu post foi compartilhado" / "your post has been shared"
+    //     2. URL mudou pra /p/<id>, /reel/<id> ou /reels/<id>
     //
-    // Se NENHUMA detectada em 90s/30s → falha (job vira retry/failed).
-    // Trade-off aceito: melhor falso negativo (retry) que falso positivo
-    // (perde controle de quantos posts realmente sairam).
+    //   IN_PROGRESS (IG ainda processando → reseta o timeout, espera mais):
+    //     3. Dialog aria-label "Sharing" / "Compartilhando" / "Publicando" / "Posting"
+    //        COM spinner visivel dentro
+    //
+    //   TIMEOUT (nada visto na janela → confirmed = false → share_unconfirmed):
+    //     - Sem sinal POSITIVO nem PROGRESSO em 90s (video) / 30s (foto) corridos
+    //     - Teto absoluto: 5min (video) / 1.5min (foto) pra evitar travar worker
+    //
+    // Por que importa o IN_PROGRESS: bug original (DYIO61gDNpQ etc) tinha
+    // o IG mostrando dialog "Sharing" com spinner aos 90s, ainda processando
+    // o upload. O bot dava timeout e marcava falha mesmo o post podendo
+    // completar 30-60s depois. Agora reseta o timer enquanto vê progresso.
     const beforeShareUrl = page.url();
-    const finalTimeout = isVideo ? 90_000 : 30_000;
+    // PROGRESS_RESET_MS: janela sem nenhum sinal antes de marcar timeout.
+    // Se durante essa janela a gente ver dialog "Sharing"/"Compartilhando"
+    // (IG processando upload), reseta o timer e espera mais uma janela.
+    // HARD_CEILING_MS: teto absoluto pra nao travar o worker eternamente.
+    // Vidoes >5min ou fotos >1.5min muito provavelmente sao IG com problema
+    // serio - o retry posterior decide.
+    const PROGRESS_RESET_MS = isVideo ? 90_000 : 30_000;
+    const HARD_CEILING_MS = isVideo ? 300_000 : 90_000;
+    const startedAt = Date.now();
+    let lastProgressAt = startedAt;
     let confirmed = false;
-    try {
-      await page.waitForFunction(
-        (urlBefore: string) => {
-          // SINAL 1: dialog "Post compartilhado" / "Post shared" visivel
-          const successDialog = Array.from(document.querySelectorAll('div[role="dialog"]')).find((d) => {
-            const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
-            const txt = (d.textContent || '').toLowerCase();
-            return (
-              lbl.includes('post compartilhado') ||
-              lbl.includes('post shared') ||
-              lbl.includes('publicação compartilhada') ||
-              txt.includes('seu post foi compartilhado') ||
-              txt.includes('your post has been shared') ||
-              txt.includes('sua publicação foi compartilhada')
-            );
-          });
-          if (successDialog) return 'dialog';
+    let lastSignal: string | null = null;
+    let pageClosed = false;
 
-          // SINAL 2: URL mudou pra um post (IG redireciona apos publicar)
-          const url = location.href;
-          if (url !== urlBefore) {
-            if (/\/(p|reel|reels)\//.test(url)) return 'url';
+    while (Date.now() - startedAt < HARD_CEILING_MS) {
+      const elapsedSinceProgress = Date.now() - lastProgressAt;
+      const remainingMs = Math.max(1000, PROGRESS_RESET_MS - elapsedSinceProgress);
+      let handle: Awaited<ReturnType<Page['waitForFunction']>> | null = null;
+      try {
+        handle = await page.waitForFunction(
+          (urlBefore: string) => {
+            // SINAL 1 (success): dialog "Post compartilhado" / "Post shared" visivel
+            const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+            const successDialog = dialogs.find((d) => {
+              const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
+              const txt = (d.textContent || '').toLowerCase();
+              return (
+                lbl.includes('post compartilhado') ||
+                lbl.includes('post shared') ||
+                lbl.includes('publicação compartilhada') ||
+                txt.includes('seu post foi compartilhado') ||
+                txt.includes('your post has been shared') ||
+                txt.includes('sua publicação foi compartilhada')
+              );
+            });
+            if (successDialog) return 'success_dialog';
+
+            // SINAL 2 (success): URL mudou pra um post (IG redireciona apos publicar)
+            const url = location.href;
+            if (url !== urlBefore) {
+              if (/\/(p|reel|reels)\//.test(url)) return 'success_url';
+            }
+
+            // SINAL 3 (in_progress): dialog "Sharing"/"Compartilhando" com spinner.
+            // IG ainda esta processando o upload server-side. NAO eh sucesso nem
+            // falha - significa "ainda esta tentando, espera mais".
+            //
+            // Selectors tolerantes (Codex P2): IG pode usar variantes como
+            // "Sharing", "Sharing...", "Sharing post", "Compartilhando…".
+            // Por isso: \b apos a palavra (cobre fim de string, espaço, pontuação)
+            // em vez de === exato.
+            const SHARING_RE = /^(sharing|compartilhando|publicando|posting)\b/;
+            const progressDialog = dialogs.find((d) => {
+              const r = (d as HTMLElement).getBoundingClientRect?.();
+              if (!r || r.width === 0 || r.height === 0) return false;
+              const lbl = (d.getAttribute('aria-label') || '').trim().toLowerCase();
+              const txt = (d.textContent || '').trim().toLowerCase().slice(0, 60);
+              const isSharing = SHARING_RE.test(lbl) || SHARING_RE.test(txt);
+              if (!isSharing) return false;
+              // Confirma que tem spinner (img com alt "Spinner" ou role progressbar)
+              const hasSpinner =
+                d.querySelector('img[alt*="pinner" i]') !== null ||
+                d.querySelector('[role="progressbar"]') !== null ||
+                d.querySelector('svg[aria-label*="oading" i]') !== null;
+              return hasSpinner;
+            });
+            if (progressDialog) return 'in_progress';
+
+            return false;
+          },
+          beforeShareUrl,
+          { timeout: remainingMs, polling: 1000 }
+        );
+        // Codex P1 (re-review): nao usar .catch(() => null) silencioso aqui.
+        // Se a pagina fechou entre o waitForFunction resolver e o jsonValue,
+        // precisamos detectar e marcar pageClosed (em vez de mascarar como
+        // share_unconfirmed).
+        let value: string | null = null;
+        try {
+          value = (await handle.jsonValue()) as string | null;
+        } catch {
+          if (page.isClosed()) {
+            pageClosed = true;
+            break;
           }
+          // jsonValue falhou mas page ainda existe: trata como sinal nulo
+          // (provavelmente o handle foi descartado por outro motivo).
+          value = null;
+        }
+        lastSignal = value;
+        if (value === 'success_dialog' || value === 'success_url') {
+          confirmed = true;
+          break;
+        }
+        if (value === 'in_progress') {
+          // IG ainda processando — reseta janela e da mais tempo
+          lastProgressAt = Date.now();
+          await humanDelay(2000, 4000);
+          continue;
+        }
+        // Sinal desconhecido (não deveria acontecer): trata como timeout
+        break;
+      } catch {
+        // Timeout OU page closed/disconnected. Codex P1: distinguir os dois,
+        // page closed nao eh share_unconfirmed (nao tem como o post ter dado
+        // certo se a aba sumiu — eh erro de infra do AdsPower/Playwright).
+        if (page.isClosed()) {
+          pageClosed = true;
+        }
+        // Em qualquer caso, sai do loop. confirmed continua false.
+        break;
+      } finally {
+        // Codex P1: descartar JSHandle pra evitar leak no isolated world
+        // do Playwright (mesmo com catch, o handle pode ter sido criado).
+        if (handle) {
+          await handle.dispose().catch(() => undefined);
+        }
+      }
+    }
 
-          return false;
-        },
-        beforeShareUrl,
-        { timeout: finalTimeout, polling: 1000 }
-      );
-      confirmed = true;
+    if (confirmed) {
       // Apos confirmar, tenta clicar "Concluir" / "Done" pra fechar o
       // dialog de sucesso (limpa estado pro proximo job).
       await page.evaluate(() => {
@@ -1049,17 +1144,29 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         return false;
       }).catch(() => undefined);
       await humanDelay(800, 1500);
-    } catch {
-      // Timeout sem ver dialog OU URL mudar — assume FALHA.
-      // Antes tinha fallback negativo aqui (dialog sumiu = success). Removido
-      // pra evitar falso positivo: dialog pode sumir por outros motivos
-      // (login expirou, modal de erro, perfil fechou) sem ter postado.
-      confirmed = false;
     }
 
     if (!confirmed) {
+      // Codex P1: distinguir page_closed de share_unconfirmed.
+      // Page closed = aba sumiu durante o wait (AdsPower fechou, Playwright
+      // perdeu conexao, navegador crashou). Nao tem como o post ter saido
+      // — eh problema de infra, nao de IG processando devagar.
+      if (pageClosed) {
+        return {
+          ok: false,
+          reason: `page_closed_during_share elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
+        };
+      }
       const dbg = await captureDebug(page, 'share-unconfirmed');
-      return { ok: false, reason: `share_unconfirmed ${dbg.screenshot ?? ''}` };
+      // Inclui o ultimo sinal observado pra ajudar diagnostico:
+      // - "in_progress": IG estava processando mas estourou o teto de 5min
+      // - "null" / outro: timeout puro, nem progresso o bot viu
+      const detail = lastSignal ? ` last=${lastSignal}` : '';
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      return {
+        ok: false,
+        reason: `share_unconfirmed${detail} elapsed=${elapsed}s ${dbg.screenshot ?? ''}`.trim(),
+      };
     }
     await humanDelay(2000, 3500);
     return { ok: true };

@@ -122,9 +122,36 @@ export async function captureDebug(
     const pngPath = join(DEBUG_DIR, pngName);
     const htmlPath = join(DEBUG_DIR, htmlName);
     const diagPath = join(DEBUG_DIR, diagName);
-    await page.screenshot({ path: pngPath, fullPage: true }).catch(() => undefined);
-    const html = await page.content().catch(() => '');
-    if (html) await writeFile(htmlPath, html, 'utf8').catch(() => undefined);
+
+    // Captura cada artefato de forma independente. Importante: NAO engolir
+    // erros silenciosamente (bug anterior — captureDebug retornava paths que
+    // nao existiam em disco quando a page ja tinha fechado, deixando o
+    // usuario sem evidencia pra diagnosticar share_unconfirmed).
+    let pngOk = false;
+    let htmlOk = false;
+    let diagOk = false;
+
+    try {
+      await page.screenshot({ path: pngPath, fullPage: true });
+      pngOk = true;
+    } catch (err) {
+      console.warn(`[debug] screenshot failed for ${pngName}: ${err instanceof Error ? err.message : err}`);
+    }
+
+    let html = '';
+    try {
+      html = await page.content();
+    } catch (err) {
+      console.warn(`[debug] page.content() failed for ${htmlName}: ${err instanceof Error ? err.message : err}`);
+    }
+    if (html) {
+      try {
+        await writeFile(htmlPath, html, 'utf8');
+        htmlOk = true;
+      } catch (err) {
+        console.warn(`[debug] writeFile failed for ${htmlName}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
 
     // Dump diagnostico compacto: URL + lista de elementos visiveis com texto
     // ou aria-label contendo palavras chave do flow ("avancar", "next",
@@ -170,21 +197,51 @@ export async function captureDebug(
           ...matches,
         ].join('\n');
       });
-      if (diag) await writeFile(diagPath, diag, 'utf8').catch(() => undefined);
-    } catch { /* diag falhou — segue sem */ }
+      if (diag) {
+        try {
+          await writeFile(diagPath, diag, 'utf8');
+          diagOk = true;
+        } catch (err) {
+          console.warn(`[debug] writeFile failed for ${diagName}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[debug] page.evaluate(diag) failed for ${diagName}: ${err instanceof Error ? err.message : err}`);
+    }
 
-    // Loga caminho ABSOLUTO no console pra Gustavo achar facil sem ter que
-    // adivinhar onde a pasta debug esta.
-    console.log(`[debug] saved: ${pngPath}`);
-    console.log(`[debug] saved: ${htmlPath}`);
-    console.log(`[debug] saved: ${diagPath}`);
+    // Verifica em disco antes de logar/retornar. Se algum artefato falhou,
+    // loga e retorna null pra esse campo (em vez de retornar path fantasma).
+    const verify = async (path: string, ok: boolean) => {
+      if (!ok) return false;
+      try {
+        const st = await stat(path);
+        return st.isFile() && st.size > 0;
+      } catch {
+        return false;
+      }
+    };
+    const [pngOnDisk, htmlOnDisk, diagOnDisk] = await Promise.all([
+      verify(pngPath, pngOk),
+      verify(htmlPath, htmlOk),
+      verify(diagPath, diagOk),
+    ]);
+
+    // Loga caminho ABSOLUTO no console pra usuario achar facil. So loga
+    // os que existem de verdade.
+    if (pngOnDisk) console.log(`[debug] saved: ${pngPath}`);
+    if (htmlOnDisk) console.log(`[debug] saved: ${htmlPath}`);
+    if (diagOnDisk) console.log(`[debug] saved: ${diagPath}`);
+    if (!pngOnDisk && !htmlOnDisk && !diagOnDisk) {
+      console.warn(`[debug] captureDebug(${tag}): nenhum artefato escrito em disco — page provavelmente fechou antes da captura.`);
+    }
 
     return {
-      screenshot: `/media-files/debug/${pngName}`,
-      html: `/media-files/debug/${htmlName}`,
-      diag: `/media-files/debug/${diagName}`,
+      screenshot: pngOnDisk ? `/media-files/debug/${pngName}` : null,
+      html: htmlOnDisk ? `/media-files/debug/${htmlName}` : null,
+      diag: diagOnDisk ? `/media-files/debug/${diagName}` : null,
     };
-  } catch {
+  } catch (err) {
+    console.warn(`[debug] captureDebug(${tag}) erro fatal: ${err instanceof Error ? err.message : err}`);
     return { screenshot: null, html: null, diag: null };
   }
 }
