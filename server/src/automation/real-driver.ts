@@ -461,14 +461,124 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
     await humanDelay(3000, 4500);
 
-    // Step 1: Click "+" (Novo post)
-    try {
-      await page
-        .locator('a:has(svg[aria-label="Novo post"]), a:has(svg[aria-label="New post"])')
-        .first()
-        .click({ timeout: 8000 });
-    } catch {
+    // Step 1: Click "+" (Novo post / Criar / Create / Neuer Beitrag)
+    //
+    // FIX 11 (12/05/2026): refactor pra multi-strategy + multi-locale. Antes era
+    // 1 selector rigido (a:has(svg[aria-label="Novo post"])), que nao casava em
+    // variantes onde IG mostra "Criar"/"Create" no aria-label, ou onde envolve
+    // o icone em <button> ou <div role="button"> em vez de <a>. Detectado quando
+    // 1-2 contas de 9 sempre falhavam (provavel A/B test do IG).
+    //
+    // Tambem inclui diagnostico enriquecido: quando todas estrategias falham,
+    // loga lista de SVGs visiveis com seus aria-labels pra eu identificar o
+    // que IG esta mostrando sem precisar de print novo.
+    const NAME_RE = /^(Novo post|New post|Criar|Create|Neuer Beitrag|Neuer Post|Erstellen)$/i;
+    const clickCreateButton = async (): Promise<boolean> => {
+      // Estrategia 1: getByRole link (cobre <a> com aria-label/text)
+      try {
+        const roleLink = page.getByRole('link', { name: NAME_RE }).first();
+        if (await roleLink.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await roleLink.click({ timeout: 5000 });
+          return true;
+        }
+      } catch { /* fallthrough */ }
+
+      // Estrategia 2: getByRole button (cobre <button> e [role=button])
+      try {
+        const roleBtn = page.getByRole('button', { name: NAME_RE }).first();
+        if (await roleBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await roleBtn.click({ timeout: 5000 });
+          return true;
+        }
+      } catch { /* fallthrough */ }
+
+      // Estrategia 3: CSS selectors com SVG aria-label em a/button/[role=button]
+      const candidates = [
+        'a:has(svg[aria-label="Novo post"])',
+        'a:has(svg[aria-label="New post"])',
+        'a:has(svg[aria-label="Criar"])',
+        'a:has(svg[aria-label="Create"])',
+        'button:has(svg[aria-label="Novo post"])',
+        'button:has(svg[aria-label="New post"])',
+        'button:has(svg[aria-label="Criar"])',
+        'button:has(svg[aria-label="Create"])',
+        '[role="button"]:has(svg[aria-label="Novo post"])',
+        '[role="button"]:has(svg[aria-label="New post"])',
+        '[role="button"]:has(svg[aria-label="Criar"])',
+        '[role="button"]:has(svg[aria-label="Create"])',
+        ':is(a,button,[role="button"]):has(svg[aria-label*="Neuer" i])',
+        ':is(a,button,[role="button"]):has(svg[aria-label*="Erstellen" i])',
+      ];
+      const cssBtn = await findAny(page, candidates, 4000);
+      if (cssBtn) {
+        try {
+          await cssBtn.click({ timeout: 5000 });
+          return true;
+        } catch { /* fallthrough */ }
+        try {
+          await cssBtn.click({ force: true, timeout: 3000 });
+          return true;
+        } catch { /* fallthrough */ }
+      }
+
+      // Estrategia 4: JS scoped no nav/sidebar — busca SVG aria-label que
+      // contenha keywords e dispara sequencia real de eventos no clicavel pai.
+      try {
+        return await page.evaluate(() => {
+          const RE = /post|criar|create|beitrag|erstellen|posten/i;
+          const navs = Array.from(document.querySelectorAll('nav, [role="navigation"], aside'));
+          const containers: Element[] = navs.length ? navs : [document.body];
+          for (const root of containers) {
+            const svgs = Array.from(root.querySelectorAll('svg[aria-label]'));
+            for (const svg of svgs) {
+              const label = svg.getAttribute('aria-label') || '';
+              if (!RE.test(label)) continue;
+              const target = svg.closest('a,button,[role="button"]') as HTMLElement | null;
+              if (!target) continue;
+              const r = target.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) continue;
+              const x = r.x + r.width / 2;
+              const y = r.y + r.height / 2;
+              const opts: MouseEventInit = {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, button: 0, buttons: 1,
+              };
+              try {
+                target.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mousedown', opts));
+                target.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse' }));
+                target.dispatchEvent(new MouseEvent('mouseup', opts));
+              } catch { /* PointerEvent indisponivel */ }
+              target.dispatchEvent(new MouseEvent('click', opts));
+              target.click();
+              return true;
+            }
+          }
+          return false;
+        });
+      } catch {
+        return false;
+      }
+    };
+
+    if (!(await clickCreateButton())) {
+      // FIX 11: diagnostico enriquecido — lista SVGs visiveis com aria-labels
+      // pra eu identificar o que IG esta mostrando nessas contas problematicas.
       const dbg = await captureDebug(page, 'create-no-plus');
+      const svgList = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('svg[aria-label]')).map((s) => {
+          const r = (s as SVGElement).getBoundingClientRect();
+          return {
+            label: s.getAttribute('aria-label'),
+            visible: r.width > 0 && r.height > 0,
+          };
+        }).slice(0, 30);
+      }).catch(() => [] as Array<{ label: string | null; visible: boolean }>);
+      await appLog({
+        source: 'driver',
+        level: 'warn',
+        message: `[create-no-plus] svgs visiveis: ${JSON.stringify(svgList)}`,
+      });
       return { ok: false, reason: `create_button_not_found ${dbg.screenshot ?? ''}` };
     }
     await humanDelay(2000, 3000);
