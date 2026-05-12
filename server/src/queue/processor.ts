@@ -129,12 +129,67 @@ export async function processJob(jobId: string): Promise<void> {
       })
     );
   } catch (err) {
+    const reason = err instanceof Error ? err.message : 'unknown_error';
+
+    // Codex P2-1: persiste status no DB ANTES de closeProfile, fechando a
+    // janela onde um crash deixaria a conta em status='active' inconsistente
+    // com a falha que ja aconteceu.
+
+    // Checkpoint do IG: pausa a conta IMEDIATAMENTE sem gastar retries.
+    // Cada retry perderia 10-20min sem resolver nada (IG so libera apos
+    // resolucao manual no AdsPower). Marca o job como failed na hora e
+    // alerta o user pra resolver na mao.
+    // Codex P2-2: usa ":" no startsWith pra evitar colisao com erros futuros
+    // que comecem com "account_in_checkpoint" sem ser checkpoint de fato.
+    if (reason.startsWith('account_in_checkpoint:')) {
+      await markCheckpoint(job.id, reason, job.attempts, job.accountId, job.account.username);
+    } else {
+      await onFailure(job.id, reason, job.attempts, job.accountId);
+    }
+
     // Em erro: fecha perfil pra evitar sessao zumbi/inconsistente, mesmo com KEEP_PROFILES_OPEN.
     // Proximo job que precisar do mesmo adsPowerId vai abrir um perfil limpo.
     await driver.closeProfile(adsId).catch(() => undefined);
-    const reason = err instanceof Error ? err.message : 'unknown_error';
-    await onFailure(job.id, reason, job.attempts, job.accountId);
   }
+}
+
+async function markCheckpoint(
+  jobId: string,
+  reason: string,
+  attempts: number,
+  accountId: string,
+  username: string
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.postJob.update({
+      where: { id: jobId },
+      data: { status: 'failed', errorMessage: reason, finishedAt: new Date(), attempts },
+    }),
+    prisma.instagramAccount.update({
+      where: { id: accountId },
+      data: {
+        status: 'needs_login',
+        lastFailureAt: new Date(),
+        consecutiveFails: { increment: 1 },
+      },
+    }),
+  ]);
+  bus.emitEvent({
+    type: 'alert',
+    payload: {
+      severity: 'error',
+      message: `@${username} em CHECKPOINT do IG (${reason}). Abre AdsPower, resolve o desafio manual e despausa a conta.`,
+      sound: true,
+    },
+  });
+  await appLog({
+    source: 'worker',
+    level: 'error',
+    message: `Job ${jobId} cancelado: @${username} em checkpoint do IG (${reason}). Conta pausada — exige resolucao manual.`,
+    jobId,
+    accountId,
+  });
+  await emitJob(jobId);
 }
 
 async function onFailure(

@@ -72,6 +72,66 @@ async function getPage(adsPowerId: string): Promise<Page> {
 }
 
 /**
+ * Detecta se a pagina atual eh um checkpoint/CAPTCHA do Instagram.
+ * Verifica:
+ *   1. URL contem /challenge/, /auth_platform/, /accounts/suspended/
+ *   2. Texto da pagina tem frases conhecidas (PT/EN/DE)
+ *
+ * Retorna string descritiva do tipo detectado, ou null se nao for checkpoint.
+ * Permite que o processor pause a conta IMEDIATAMENTE sem gastar retries
+ * (cada retry de checkpoint perde 10-20min e nao resolve nada — IG so libera
+ * apos resolucao manual).
+ *
+ * Codex P2-5: faz 3 verificacoes espacadas em 1s pra cobrir caso onde a pagina
+ * esta no meio de um redirect pra /challenge/. Custo de ~2s no caso negativo
+ * (sem checkpoint), zero overhead no positivo (retorna no primeiro hit).
+ */
+async function detectCheckpoint(page: Page): Promise<string | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = await detectCheckpointOnce(page);
+    if (result) return result;
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1000));
+  }
+  return null;
+}
+
+async function detectCheckpointOnce(page: Page): Promise<string | null> {
+  const url = page.url();
+  if (/\/challenge\//.test(url)) return 'url:challenge';
+  if (/\/auth_platform\//.test(url)) return 'url:auth_platform';
+  if (/\/accounts\/suspended\//.test(url)) return 'url:suspended';
+
+  // Texto da pagina — substrings em lowercase, multilingual
+  const found = await page.evaluate(() => {
+    const txt = (document.body?.innerText || '').toLowerCase();
+    const phrases = [
+      // PT
+      'confirme que você é humano',
+      'confirme que voce e humano',
+      'confirme sua identidade',
+      'sua conta foi suspensa',
+      // EN
+      "confirm that you're human",
+      'confirm that you are human',
+      "help us confirm it's you",
+      'we just need to confirm',
+      'your account has been suspended',
+      // DE
+      'bestätige, dass du ein mensch bist',
+      'bestatige, dass du ein mensch bist',
+      'weise nach, dass du kein bot bist',
+      'dein konto wurde gesperrt',
+    ];
+    for (const p of phrases) {
+      if (txt.includes(p)) return p;
+    }
+    return null;
+  }).catch(() => null);
+
+  return found ? `text:${found.slice(0, 40)}` : null;
+}
+
+/**
  * Fecha modais informativos que o IG mostra eventualmente (ex: "Agora os posts
  * de video sao compartilhados como reels"). Sao popups com botao "OK" no centro
  * da tela que travam o fluxo. Sai sem erro se nao achar nada (no-op).
@@ -82,12 +142,19 @@ async function dismissInfoModal(page: Page, depth = 0): Promise<void> {
   if (depth >= 4) return;
 
   const labels = [
+    // PT
     'OK', 'Ok',
     'Entendi', 'Got it',
     'Continuar', 'Continue',
     'Permitir', 'Allow',
     'Sim', 'Yes',
     'Concluir', 'Done', 'Concluído', 'Concluido',
+    // DE
+    'Verstanden',
+    'Erlauben', 'Zulassen',
+    'Ja',
+    'Fertig', 'Schließen', 'Schliessen',
+    'Weiter',
   ];
   const okSelectors: string[] = [];
   for (const label of labels) {
@@ -310,15 +377,19 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
       'div[role="button"]:has-text("Adicionar a sua story")',
       'div[role="button"]:has-text("Adicionar à sua story")',
       'div[role="button"]:has-text("Add to your story")',
-      // Desktop UI - generico
+      // Desktop UI - generico (PT/EN/DE)
       'button:has-text("Compartilhar")',
       'button:has-text("Share")',
       'button:has-text("Publicar")',
       'button:has-text("Post")',
+      'button:has-text("Teilen")',
+      'button:has-text("Posten")',
       'div[role="button"]:has-text("Compartilhar")',
       'div[role="button"]:has-text("Share")',
       'div[role="button"]:has-text("Publicar")',
       'div[role="button"]:has-text("Post")',
+      'div[role="button"]:has-text("Teilen")',
+      'div[role="button"]:has-text("Posten")',
     ];
     const shareBtn = await findAny(page, shareSelectors, 8000);
     if (!shareBtn) {
@@ -409,15 +480,15 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // num timeout curto e segue).
     const dialogReady = await page
       .getByRole('dialog')
-      .filter({ hasText: /Selecionar do computador|Select from computer/i })
+      .filter({ hasText: /Selecionar do computador|Select from computer|Vom Computer auswählen|Vom Computer auswahlen/i })
       .first()
       .isVisible({ timeout: 800 })
       .catch(() => false);
     if (!dialogReady) {
       try {
         await page
-          .getByRole('link', { name: /^Postar$|^Post$/i })
-          .or(page.getByRole('button', { name: /^Postar$|^Post$/i }))
+          .getByRole('link', { name: /^Postar$|^Post$|^Beitrag$|^Posten$/i })
+          .or(page.getByRole('button', { name: /^Postar$|^Post$|^Beitrag$|^Posten$/i }))
           .first()
           .click({ timeout: 3000 });
         await humanDelay(1500, 2500);
@@ -430,7 +501,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     try {
       const dialogBtn = page
         .getByRole('dialog')
-        .getByRole('button', { name: /Selecionar do computador|Select from computer/i })
+        .getByRole('button', { name: /Selecionar do computador|Select from computer|Vom Computer auswählen|Vom Computer auswahlen/i })
         .first();
       const [chooser] = await Promise.all([
         page.waitForEvent('filechooser', { timeout: 8000 }),
@@ -467,7 +538,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             }
             // Sem spinner: confere se Avancar ta enabled
             const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
-            const advanceBtn = btns.find((b) => /^(Avançar|Next)$/i.test(b.textContent?.trim() || ''));
+            const advanceBtn = btns.find((b) => /^(Avançar|Next|Weiter)$/i.test(b.textContent?.trim() || ''));
             if (!advanceBtn) return false;
             const disabled = (advanceBtn as HTMLButtonElement).disabled || advanceBtn.getAttribute('aria-disabled') === 'true';
             return !disabled;
@@ -503,7 +574,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       // Estrategia 1: getByRole nativo do Playwright — pega `<button>` ou `[role="button"]`
       // com texto/aria-label "Avançar" ou "Next". Confirmado funcional via inspect-ig.mjs.
       try {
-        const roleBtn = page.getByRole('button', { name: /^(Avançar|Next)$/i }).first();
+        const roleBtn = page.getByRole('button', { name: /^(Avançar|Next|Weiter)$/i }).first();
         if (await roleBtn.isVisible({ timeout: Math.min(timeoutMs, 3000) }).catch(() => false)) {
           try {
             await roleBtn.click({ timeout: 5000 });
@@ -516,20 +587,25 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         }
       } catch { /* fallthrough */ }
 
-      // Estrategia 2: findAny CSS selectors (fallback pra versoes antigas)
+      // Estrategia 2: findAny CSS selectors (fallback pra versoes antigas) — PT/EN/DE
       const btn = await findAny(
         page,
         [
           'div[role="dialog"] [role="button"]:has-text("Avançar")',
           'div[role="dialog"] [role="button"]:has-text("Next")',
+          'div[role="dialog"] [role="button"]:has-text("Weiter")',
           'div[role="dialog"] button:has-text("Avançar")',
           'div[role="dialog"] button:has-text("Next")',
+          'div[role="dialog"] button:has-text("Weiter")',
           '[role="button"]:has-text("Avançar")',
           '[role="button"]:has-text("Next")',
+          '[role="button"]:has-text("Weiter")',
           'button:has-text("Avançar")',
           'button:has-text("Next")',
+          'button:has-text("Weiter")',
           'a:has-text("Avançar")',
           'a:has-text("Next")',
+          'a:has-text("Weiter")',
         ],
         Math.min(timeoutMs, 4000)
       );
@@ -559,7 +635,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       // ambiguas (continuar/continue) — so avancar/next/proximo.
       try {
         const clickedGlobal = await page.evaluate(() => {
-          const RE = /^\s*(avancar|avançar|next|proximo|próximo)\s*$/i;
+          const RE = /^\s*(avancar|avançar|next|proximo|próximo|weiter|vorwärts|vorwarts)\s*$/i;
 
           // Acha o dialog ativo (visivel) — preferencia pelo de "Criar novo post"
           // ou Editar; senao pega o primeiro visivel.
@@ -737,13 +813,17 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     const captionSelectors =
       'div[contenteditable="true"][aria-label*="legenda" i],' +
       'div[contenteditable="true"][aria-label*="caption" i],' +
+      'div[contenteditable="true"][aria-label*="bildunterschrift" i],' +
       'textarea[aria-label*="legenda" i],' +
-      'textarea[aria-label*="caption" i]';
+      'textarea[aria-label*="caption" i],' +
+      'textarea[aria-label*="bildunterschrift" i]';
     const shareTextSelector =
       'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Compartilhar"),' +
       'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Share"),' +
       'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Publicar"),' +
-      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Post")';
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Post"),' +
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Teilen"),' +
+      'div[role="dialog"] :is(button, [role="button"], a, div):has-text("Posten")';
 
     const isOnCaptionScreen = async () => {
       const captionField = await page
@@ -860,21 +940,29 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       'div[role="dialog"] [role="button"]:has-text("Share")',
       'div[role="dialog"] [role="button"]:has-text("Publicar")',
       'div[role="dialog"] [role="button"]:has-text("Post")',
+      'div[role="dialog"] [role="button"]:has-text("Teilen")',
+      'div[role="dialog"] [role="button"]:has-text("Posten")',
       // <button> nativo
       'div[role="dialog"] button:has-text("Compartilhar")',
       'div[role="dialog"] button:has-text("Share")',
       'div[role="dialog"] button:has-text("Publicar")',
       'div[role="dialog"] button:has-text("Post")',
+      'div[role="dialog"] button:has-text("Teilen")',
+      'div[role="dialog"] button:has-text("Posten")',
       // <a> (algumas versoes)
       'div[role="dialog"] a:has-text("Compartilhar")',
       'div[role="dialog"] a:has-text("Share")',
       'div[role="dialog"] a:has-text("Publicar")',
       'div[role="dialog"] a:has-text("Post")',
+      'div[role="dialog"] a:has-text("Teilen")',
+      'div[role="dialog"] a:has-text("Posten")',
       // <div> folha (sem filhos) — fallback de elemento generico clickable
       'div[role="dialog"] div:has-text("Compartilhar"):not(:has(*))',
       'div[role="dialog"] div:has-text("Share"):not(:has(*))',
       'div[role="dialog"] div:has-text("Publicar"):not(:has(*))',
       'div[role="dialog"] div:has-text("Post"):not(:has(*))',
+      'div[role="dialog"] div:has-text("Teilen"):not(:has(*))',
+      'div[role="dialog"] div:has-text("Posten"):not(:has(*))',
     ];
 
     // Auto-recovery: se Step 6 nao achar Compartilhar, eh provavel que
@@ -917,7 +1005,8 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         return await page.evaluate(() => {
           // SCOPED no dialog ativo (Codex audit #3: antes varria DOM inteiro
           // e podia clicar Post/Share fora do composer — ex: nav, popup, etc).
-          const RE = /^\s*(compartilhar|share|publicar|post|enviar)\s*$/i;
+          // PT/EN/DE: compartilhar|share|publicar|post|enviar|teilen|posten
+          const RE = /^\s*(compartilhar|share|publicar|post|enviar|teilen|posten)\s*$/i;
           const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
           const visibleDialogs = dialogs.filter((d) => {
             const r = (d as HTMLElement).getBoundingClientRect();
@@ -1028,6 +1117,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         handle = await page.waitForFunction(
           (urlBefore: string) => {
             // SINAL 1 (success): dialog "Post compartilhado" / "Post shared" visivel
+            // PT/EN/DE
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
             const successDialog = dialogs.find((d) => {
               const lbl = (d.getAttribute('aria-label') || '').toLowerCase();
@@ -1036,9 +1126,13 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
                 lbl.includes('post compartilhado') ||
                 lbl.includes('post shared') ||
                 lbl.includes('publicação compartilhada') ||
+                lbl.includes('beitrag geteilt') ||
+                lbl.includes('post geteilt') ||
                 txt.includes('seu post foi compartilhado') ||
                 txt.includes('your post has been shared') ||
-                txt.includes('sua publicação foi compartilhada')
+                txt.includes('sua publicação foi compartilhada') ||
+                txt.includes('dein beitrag wurde geteilt') ||
+                txt.includes('dein post wurde geteilt')
               );
             });
             if (successDialog) return 'success_dialog';
@@ -1057,7 +1151,8 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             // "Sharing", "Sharing...", "Sharing post", "Compartilhando…".
             // Por isso: \b apos a palavra (cobre fim de string, espaço, pontuação)
             // em vez de === exato.
-            const SHARING_RE = /^(sharing|compartilhando|publicando|posting)\b/;
+            // PT/EN/DE: sharing|compartilhando|publicando|posting|wird geteilt|wird gepostet
+            const SHARING_RE = /^(sharing|compartilhando|publicando|posting|wird (geteilt|gepostet))\b/;
             const progressDialog = dialogs.find((d) => {
               const r = (d as HTMLElement).getBoundingClientRect?.();
               if (!r || r.width === 0 || r.height === 0) return false;
@@ -1130,7 +1225,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       // Apos confirmar, tenta clicar "Concluir" / "Done" pra fechar o
       // dialog de sucesso (limpa estado pro proximo job).
       await page.evaluate(() => {
-        const RE = /^(Concluir|Concluído|Done|OK|Ok|Pronto)$/i;
+        const RE = /^(Concluir|Concluído|Done|OK|Ok|Pronto|Fertig|Schließen)$/i;
         const all = Array.from(document.querySelectorAll('button, [role="button"], a'));
         for (const el of all) {
           const r = (el as HTMLElement).getBoundingClientRect?.();
@@ -1262,10 +1357,10 @@ export const realDriver: AutomationDriver = {
       await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
       await humanDelay(2000, 3500);
 
-      // Tela de consentimento LGPD/Meta (1ª etapa)
+      // Tela de consentimento LGPD/Meta (1ª etapa) — PT/EN/DE
       try {
         await page
-          .getByRole('button', { name: /Começar|Get started|Continue/i })
+          .getByRole('button', { name: /Começar|Get started|Continue|Loslegen|Weiter/i })
           .first()
           .click({ timeout: 3000 });
         await humanDelay(800, 1500);
@@ -1273,10 +1368,12 @@ export const realDriver: AutomationDriver = {
         /* sem consent */
       }
 
-      // Tela de cookies/permitir
+      // Tela de cookies/permitir — PT/EN/DE
       try {
         await page
-          .getByRole('button', { name: /Permitir todos|Allow all|Aceitar|Accept|Concordar|Agree/i })
+          .getByRole('button', {
+            name: /Permitir todos|Allow all|Aceitar|Accept|Concordar|Agree|Alle akzeptieren|Akzeptieren|Zustimmen/i,
+          })
           .first()
           .click({ timeout: 2000 });
         await humanDelay();
@@ -1284,11 +1381,11 @@ export const realDriver: AutomationDriver = {
         /* sem cookies */
       }
 
-      // Pop-ups de salvar info / notificações ("Agora não")
+      // Pop-ups de salvar info / notificações ("Agora não" / "Not now" / "Jetzt nicht")
       for (let i = 0; i < 2; i++) {
         try {
           await page
-            .getByRole('button', { name: /^Agora não$|^Not now$/i })
+            .getByRole('button', { name: /^Agora não$|^Not now$|^Jetzt nicht$/i })
             .first()
             .click({ timeout: 2000 });
           await humanDelay();
@@ -1297,10 +1394,26 @@ export const realDriver: AutomationDriver = {
         }
       }
 
-      // Detecta tela de login (campos username/password)
+      // Detecta CHECKPOINT do IG (CAPTCHA / "Confirme que voce eh humano").
+      // Detectado por URL (/challenge/, /auth_platform/) OU texto na pagina
+      // em PT/EN/DE. Lanca erro especifico account_in_checkpoint pro processor
+      // pausar a conta sem queimar 2 retries (cada retry = 10-20min perdidos).
+      const checkpointInfo = await detectCheckpoint(page);
+      if (checkpointInfo) {
+        await captureDebug(page, `checkpoint-${igUsername}`);
+        throw new Error(`account_in_checkpoint:${checkpointInfo}`);
+      }
+
+      // Detecta tela de login (campos username/password) — selectors PT/EN/DE
       const loginField = await findAny(
         page,
-        ['input[name="username"]', 'input[aria-label*="Telefone" i]', 'input[aria-label*="username" i]'],
+        [
+          'input[name="username"]',
+          'input[aria-label*="Telefone" i]',
+          'input[aria-label*="username" i]',
+          'input[aria-label*="Benutzername" i]',
+          'input[aria-label*="Mobilnummer" i]',
+        ],
         2000
       );
       if (loginField) {
@@ -1308,13 +1421,14 @@ export const realDriver: AutomationDriver = {
         return false;
       }
 
-      // Confirma logado pelo svg "Página inicial" no sidebar
+      // Confirma logado pelo svg "Página inicial" no sidebar — PT/EN/DE
       const home = await findAny(
         page,
         [
           'svg[aria-label="Página inicial"]',
           'svg[aria-label="Home"]',
           'svg[aria-label="Início"]',
+          'svg[aria-label="Startseite"]',
           `[role=link][href="/${igUsername}/"]`,
         ],
         8000
@@ -1325,6 +1439,11 @@ export const realDriver: AutomationDriver = {
       }
       return true;
     } catch (err) {
+      // Re-throw checkpoint sem captureDebug duplicado (ja capturou la em cima)
+      // Codex P2-2: usa ":" pra match exato do prefixo, evita colisao com erros futuros
+      if (err instanceof Error && err.message.startsWith('account_in_checkpoint:')) {
+        throw err;
+      }
       await captureDebug(page, `ensure-error-${igUsername}`);
       throw err;
     }
