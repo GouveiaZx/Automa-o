@@ -1057,6 +1057,12 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
       }
     };
 
+    // FIX 9 (Codex P2 #2): capturar beforeShareUrl ANTES do click, nao depois.
+    // Antes era capturado apos clickShareMultiStrategy + 2x dismissInfoModal,
+    // e nesse meio tempo o IG ja podia ter saido de /create/, fazendo o gate
+    // wasOnCreate falhar mesmo em sucesso legitimo.
+    const beforeShareUrl = page.url();
+
     if (!(await clickShareMultiStrategy())) {
       const dbg = await captureDebug(page, 'no-share-btn');
       return { ok: false, reason: `share_button_not_found ${dbg.screenshot ?? ''}` };
@@ -1094,7 +1100,7 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     // o IG mostrando dialog "Sharing" com spinner aos 90s, ainda processando
     // o upload. O bot dava timeout e marcava falha mesmo o post podendo
     // completar 30-60s depois. Agora reseta o timer enquanto vê progresso.
-    const beforeShareUrl = page.url();
+    // (beforeShareUrl ja capturado ANTES do click — FIX 9 Codex P2 #2)
     // PROGRESS_RESET_MS: janela sem nenhum sinal antes de marcar timeout.
     // Se durante essa janela a gente ver dialog "Sharing"/"Compartilhando"
     // (IG processando upload), reseta o timer e espera mais uma janela.
@@ -1142,9 +1148,39 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             if (successDialog) return 'success_dialog';
 
             // SINAL 2 (success): URL mudou pra um post (IG redireciona apos publicar)
+            //
+            // FIX 9: regex original /\/(p|reel|reels)\// matchava /reels/ (feed
+            // home) sem requirir ID — IG redireciona pra /reels/ as vezes em
+            // falha, e bot marcava como sucesso sem post real. Causou regressao
+            // em 12/05/2026 com 5 contas marcando "done" sem nenhum post.
+            //
+            // Codex P1: regex revisada nao bastava — /reels/explore/ ainda
+            // matchava porque "explore" eh alfanumerico. Solucao definitiva:
+            // parse URL real, exigir pathname ESTRITO /p|reel|reels/<id>/
+            // sem nada depois, com blacklist de palavras conhecidas.
+            //
+            // Regra:
+            //   1. URL mudou de antes do share
+            //   2. pathname casa exato /^\/(p|reel|reels)\/<id>\/?$/ (sem
+            //      sub-paths como /audio/, /explore/ depois)
+            //   3. id NAO eh palavra IG conhecida (explore, audio, feed, etc)
+            //   4. urlBefore tava em /create/ — confirma transicao de criacao
             const url = location.href;
             if (url !== urlBefore) {
-              if (/\/(p|reel|reels)\//.test(url)) return 'success_url';
+              let isPostPage = false;
+              try {
+                const u = new URL(url);
+                const m = u.pathname.match(/^\/(p|reel|reels)\/([A-Za-z0-9_-]+)\/?$/);
+                if (m) {
+                  const idLower = m[2].toLowerCase();
+                  const excluded = ['explore', 'audio', 'feed', 'hide', 'trending', 'tagged', 'reels'];
+                  isPostPage = !excluded.includes(idLower);
+                }
+              } catch {
+                /* URL invalida — mantem isPostPage = false */
+              }
+              const wasOnCreate = /\/create\//.test(urlBefore);
+              if (isPostPage && wasOnCreate) return 'success_url';
             }
 
             // SINAL 3 (in_progress): dialog "Sharing"/"Compartilhando" com spinner.
@@ -1268,6 +1304,26 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     }
 
     if (confirmed) {
+      // FIX 9 (Codex P2 #3): captura RAPIDA do estado pre-Done (URL + dialogs)
+      // antes de clicar Done — dialog de sucesso pode sumir apos o click. O
+      // page.evaluate aqui eh ~100-200ms, ok pra nao atrasar o Done click.
+      // O captureDebug + appLog (mais lentos) acontecem DEPOIS do Done click.
+      const auditInfo = await page.evaluate(() => {
+        const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+        const visible = dialogs.filter((d) => {
+          const r = (d as HTMLElement).getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+        return {
+          url: location.href,
+          dialogCount: visible.length,
+          dialogTexts: visible.map((d) => ({
+            aria: (d.getAttribute('aria-label') || '').slice(0, 80),
+            text: (d.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+          })),
+        };
+      }).catch(() => ({ url: 'evaluate_failed', dialogCount: 0, dialogTexts: [] as Array<{aria: string; text: string}> }));
+
       // Apos confirmar, tenta clicar "Concluir" / "Done" pra fechar o
       // dialog de sucesso (limpa estado pro proximo job).
       await page.evaluate(() => {
@@ -1285,6 +1341,31 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         return false;
       }).catch(() => undefined);
       await humanDelay(800, 1500);
+
+      // FIX 9: parte LENTA do audit (captureDebug + appLog) — depois do Done
+      // click pra nao atrasar a UX do click. auditInfo ja tem URL e dialog
+      // text capturados ANTES do Done click. Try/catch swallow eh aceitavel
+      // porque a decisao de "done" ja esta tomada nesse ponto.
+      try {
+        const auditTag = `done-audit-${Date.now()}`;
+        const dbg = await captureDebug(page, auditTag);
+        await appLog({
+          source: 'worker',
+          level: 'info',
+          message:
+            `[done-audit] signal=${lastSignal} url=${auditInfo.url} ` +
+            `dialogs=${auditInfo.dialogCount} ` +
+            `texts=${JSON.stringify(auditInfo.dialogTexts)} ` +
+            `screenshot=${dbg.screenshot ?? 'none'}`,
+        });
+      } catch (err) {
+        // nit do Codex: log warn em vez de swallow silente
+        await appLog({
+          source: 'worker',
+          level: 'warn',
+          message: `[done-audit] falha ao gravar audit: ${err instanceof Error ? err.message : 'unknown'}`,
+        }).catch(() => undefined);
+      }
     }
 
     if (!confirmed) {
