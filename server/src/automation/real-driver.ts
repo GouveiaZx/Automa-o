@@ -1193,19 +1193,28 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             // em vez de === exato.
             // PT/EN/DE: sharing|compartilhando|publicando|posting|wird geteilt|wird gepostet
             const SHARING_RE = /^(sharing|compartilhando|publicando|posting|wird (geteilt|gepostet))\b/;
+            // FIX 10 (12/05/2026): gate hasSpinner removido. Bug detectado por
+            // evidencia direta — IG mostrava dialog "Compartilhando" com spinner
+            // SVG animado SEM aria-label "loading" SEM alt="Spinner" SEM
+            // role=progressbar (animacao puramente CSS de stroke-dasharray na
+            // SVG do brand IG). Resultado: post real ia pro ar (1 post no perfil
+            // confirmado pelo user), mas bot nunca via in_progress, timeoutava
+            // em 90s e marcava failed → retry → potencial duplicata.
+            //
+            // Trust no title: dialog visivel em div[role="dialog"] com label/title
+            // comecando em "compartilhando|sharing|publicando|posting|wird
+            // (geteilt|gepostet)" eh sinal forte de share em andamento. Risco
+            // de false positive eh baixissimo — qualquer dialog informativo com
+            // esse titulo ja foi limpado pelo dismissInfoModal (Step 6.5) antes
+            // do Step 7 comecar. Pior caso de false positive: bot espera ate
+            // HARD_CEILING_MS (5min) em vez de timeoutar em 90s. Aceitavel
+            // contra o bug original de marcar failed em quase todo post.
             const progressDialog = dialogs.find((d) => {
               const r = (d as HTMLElement).getBoundingClientRect?.();
               if (!r || r.width === 0 || r.height === 0) return false;
               const lbl = (d.getAttribute('aria-label') || '').trim().toLowerCase();
               const txt = (d.textContent || '').trim().toLowerCase().slice(0, 60);
-              const isSharing = SHARING_RE.test(lbl) || SHARING_RE.test(txt);
-              if (!isSharing) return false;
-              // Confirma que tem spinner (img com alt "Spinner" ou role progressbar)
-              const hasSpinner =
-                d.querySelector('img[alt*="pinner" i]') !== null ||
-                d.querySelector('[role="progressbar"]') !== null ||
-                d.querySelector('svg[aria-label*="oading" i]') !== null;
-              return hasSpinner;
+              return SHARING_RE.test(lbl) || SHARING_RE.test(txt);
             });
             if (progressDialog) return 'in_progress';
 
