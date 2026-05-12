@@ -19,19 +19,45 @@ function timeOnDate(hhmm: string, base: Date): Date {
 /**
  * Próximo horário válido dentro da janela da campanha.
  * Se o candidato estiver fora da janela, joga para o início da janela do próximo dia.
+ *
+ * Suporta janelas cross-midnight (windowStart > windowEnd, ex: 22:30→06:00):
+ * a noite vai de startToday (22:30) ate endToday (06:00 conceitualmente do mesmo
+ * "turno", embora no calendario seja antes de startToday). Pra usuario eh UMA
+ * janela continua que cruza meia-noite.
+ *
+ * Bug original (pre-fix): a funcao assumia windowStart < windowEnd. Pra 22:30→06:00,
+ * tempos validos como 23:30 ou 02:00 eram empurrados pra 22:30 do dia seguinte
+ * incorretamente, e tempos invalidos como 12:00 eram aprovados.
  */
 export function clampToWindow(
   candidate: Date,
   windowStart: string,
   windowEnd: string
 ): Date {
+  const [sh, sm] = windowStart.split(':').map(Number);
+  const [eh, em] = windowEnd.split(':').map(Number);
+  const isCrossMidnight = sh * 60 + sm > eh * 60 + em;
+
   const startToday = timeOnDate(windowStart, candidate);
   const endToday = timeOnDate(windowEnd, candidate);
-  if (candidate < startToday) return startToday;
-  if (candidate <= endToday) return candidate;
-  const tomorrow = new Date(candidate);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return timeOnDate(windowStart, tomorrow);
+
+  if (!isCrossMidnight) {
+    // Janela mesmo-dia (ex: 08:00→22:00) — comportamento original.
+    if (candidate < startToday) return startToday;
+    if (candidate <= endToday) return candidate;
+    const tomorrow = new Date(candidate);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return timeOnDate(windowStart, tomorrow);
+  }
+
+  // Janela cross-midnight (ex: 22:30→06:00).
+  // Pertence se: candidate >= startToday (parte da noite) OU
+  // candidate <= endToday (parte da madrugada).
+  if (candidate >= startToday) return candidate; // entre startToday e 23:59
+  if (candidate <= endToday) return candidate; // entre 00:00 e endToday
+  // Lacuna entre endToday e startToday (ex: 06:01..22:29) — empurra pro
+  // proximo windowStart, que eh no MESMO dia (a "noite ainda nao comecou").
+  return startToday;
 }
 
 /**
