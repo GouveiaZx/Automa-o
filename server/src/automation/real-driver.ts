@@ -1108,6 +1108,10 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
     let confirmed = false;
     let lastSignal: string | null = null;
     let pageClosed = false;
+    // FIX 8: snippet do erro do IG quando SINAL 4 detecta toast/modal de falha.
+    // Permite bailtar em segundos com reason ig_share_error em vez de esperar
+    // o teto de 5min (HARD_CEILING_MS) com share_unconfirmed.
+    let igErrorDetail: string | null = null;
 
     while (Date.now() - startedAt < HARD_CEILING_MS) {
       const elapsedSinceProgress = Date.now() - lastProgressAt;
@@ -1169,6 +1173,31 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
             });
             if (progressDialog) return 'in_progress';
 
+            // SINAL 4 (error_toast): IG mostrou erro explicito apos click em
+            // Compartilhar (ex: "Algo deu errado tente novamente"). Sem isso,
+            // o bot espera 5min/1.5min ate share_unconfirmed; com isso, bailta
+            // em segundos com reason ig_share_error e o texto do erro.
+            // PT/EN/DE.
+            //
+            // Ordem importa: vem DEPOIS de success_dialog/success_url/in_progress.
+            // Se IG mostrar erro E sucesso simultaneamente (improvavel), sucesso
+            // ganha. Se mostrar erro DURANTE o "Sharing", in_progress ganha por
+            // 1 ciclo, depois progressDialog some e error_toast pega.
+            const ERROR_RE = /algo deu errado|n[ãa]o foi poss[ií]vel (compartilhar|publicar)|problema(s)? para (compartilhar|publicar)|something went wrong|couldn'?t (share|post)|please try again|etwas ist schiefgelaufen|konnte nicht (geteilt|gepostet) werden|erneut versuchen/i;
+            const errorContainers = Array.from(document.querySelectorAll(
+              'div[role="alert"], div[role="status"], [data-testid*="toast" i], [data-testid*="snack" i], div[role="dialog"]'
+            ));
+            const errorEl = errorContainers.find((el) => {
+              const r = (el as HTMLElement).getBoundingClientRect?.();
+              if (!r || r.width === 0 || r.height === 0) return false;
+              const txt = (el.textContent || '').slice(0, 200);
+              return ERROR_RE.test(txt);
+            });
+            if (errorEl) {
+              const snippet = (errorEl.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+              return 'error_toast:' + snippet;
+            }
+
             return false;
           },
           beforeShareUrl,
@@ -1200,6 +1229,23 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
           lastProgressAt = Date.now();
           await humanDelay(2000, 4000);
           continue;
+        }
+        if (typeof value === 'string' && value.startsWith('error_toast:')) {
+          // FIX 8: IG mostrou erro explicito — bailta sem esperar mais.
+          // Codex P2: gate de 5s pra evitar bailtar em toast residual (ex:
+          // toast de "upload demorando" que sobrou da fase anterior). Posts
+          // legitimos que falham levam pelo menos 2-5s pra IG mostrar erro,
+          // entao gate de 5s nao atrapalha caso real.
+          if (Date.now() - startedAt < 5000) {
+            // Reseta progressAt pra nao desistir prematuro se acabar sendo
+            // toast persistente; revisita no proximo ciclo de polling.
+            lastProgressAt = Date.now();
+            await humanDelay(1500, 2500);
+            continue;
+          }
+          // Salva o snippet pra usar como reason apos sair do loop.
+          igErrorDetail = value.slice('error_toast:'.length);
+          break;
         }
         // Sinal desconhecido (não deveria acontecer): trata como timeout
         break;
@@ -1250,6 +1296,17 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         return {
           ok: false,
           reason: `page_closed_during_share elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
+        };
+      }
+      // FIX 8: IG mostrou erro explicito (toast/modal "Algo deu errado", etc).
+      // Bailtamos cedo com reason ig_share_error em vez de share_unconfirmed
+      // (que sugere timeout). User no painel ve o texto do erro do proprio IG.
+      if (igErrorDetail) {
+        const dbg = await captureDebug(page, 'ig-share-error');
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        return {
+          ok: false,
+          reason: `ig_share_error: ${igErrorDetail} elapsed=${elapsed}s ${dbg.screenshot ?? ''}`.trim(),
         };
       }
       const dbg = await captureDebug(page, 'share-unconfirmed');
