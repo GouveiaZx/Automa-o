@@ -8,6 +8,8 @@ export interface PostArgs {
   filePath: string;
   caption?: string | null;
   linkUrl?: string | null;
+  /** IG username — usado pela verificacao por perfil (FIX 12). */
+  igUsername?: string;
 }
 
 export interface BioArgs {

@@ -72,6 +72,35 @@ async function getPage(adsPowerId: string): Promise<Page> {
 }
 
 /**
+ * FIX 12: navega pro perfil do user e retorna o URL do post mais recente
+ * (primeiro item da grid). Usado pra verificar se um post foi pro ar quando
+ * Step 7 estoura HARD_CEILING_MS com last=in_progress.
+ *
+ * Captura BEFORE no inicio do flow, AFTER na timeout. Se URL diferente, post
+ * foi pro ar mesmo sem confirmacao visual no /create/.
+ *
+ * Retorna null se nao conseguir carregar o perfil ou se a conta nao tem posts.
+ */
+async function getLatestPostUrl(page: Page, igUsername: string): Promise<string | null> {
+  try {
+    await page.goto(`https://www.instagram.com/${igUsername}/`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 20_000,
+    });
+    await humanDelay(1500, 2500);
+    return await page.evaluate(() => {
+      // Procura primeiro link de post na grid. IG profile renderiza posts
+      // sorted por data (newest first).
+      const links = Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+      const postLink = links.find((a) => /\/(p|reel|reels)\/[A-Za-z0-9_-]+/.test(a.href));
+      return postLink ? postLink.href : null;
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Detecta se a pagina atual eh um checkpoint/CAPTCHA do Instagram.
  * Verifica:
  *   1. URL contem /challenge/, /auth_platform/, /accounts/suspended/
@@ -458,6 +487,16 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
   const page = await getPage(args.adsPowerId);
   try {
     await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined);
+
+    // FIX 12: captura URL do post mais recente ANTES do flow comecar.
+    // Usado depois no Step 7 pra detectar se um post novo apareceu mesmo
+    // que IG nao tenha mostrado confirmacao visual no /create/.
+    // Sem igUsername, skip (compat com chamadas legadas).
+    let beforeLatestPostUrl: string | null = null;
+    if (args.igUsername) {
+      beforeLatestPostUrl = await getLatestPostUrl(page, args.igUsername);
+    }
+
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
     await humanDelay(3000, 4500);
 
@@ -1419,6 +1458,38 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
         if (handle) {
           await handle.dispose().catch(() => undefined);
         }
+      }
+    }
+
+    // FIX 12 (12/05/2026): se bailou por timeout com last=in_progress, IG estava
+    // processando mas nao confirmou via dialog/URL. Verifica diretamente no perfil
+    // se um post novo apareceu — IG as vezes completa o share mas nao mostra
+    // confirmacao visual nem redireciona.
+    //
+    // Cenario que provocou o fix: job cmp33qoku0001yc4sc0yqgeop bailou em 332s
+    // (last=in_progress) e foi marcado falha. Nao sabemos se post foi pro ar ou nao.
+    // Com essa verificacao, se post foi pro ar, marcamos done e evitamos retry +
+    // duplicata.
+    if (
+      !confirmed &&
+      !pageClosed &&
+      !igErrorDetail &&
+      lastSignal === 'in_progress' &&
+      args.igUsername
+    ) {
+      const afterLatestPostUrl = await getLatestPostUrl(page, args.igUsername);
+      const newPostDetected = afterLatestPostUrl && afterLatestPostUrl !== beforeLatestPostUrl;
+      await appLog({
+        source: 'worker',
+        level: 'info',
+        message:
+          `[fix12-verify] @${args.igUsername} timeout com in_progress — ` +
+          `before=${beforeLatestPostUrl ?? 'null'} after=${afterLatestPostUrl ?? 'null'} ` +
+          `newPost=${newPostDetected ? 'YES' : 'NO'}`,
+      }).catch(() => undefined);
+      if (newPostDetected) {
+        confirmed = true;
+        lastSignal = 'profile_verified';
       }
     }
 

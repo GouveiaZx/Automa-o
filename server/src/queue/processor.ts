@@ -79,11 +79,13 @@ export async function processJob(jobId: string): Promise<void> {
             filePath,
             caption: job.media.caption,
             linkUrl: job.media.linkUrl,
+            igUsername: job.account.username,
           })
         : await driver.postReel({
             adsPowerId: adsId,
             filePath,
             caption: job.media.caption,
+            igUsername: job.account.username,
           });
 
     // Story usa mobile UA spoof via initScript que CONTAMINA o contexto.
