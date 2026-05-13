@@ -1605,9 +1605,48 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 export const realDriver: AutomationDriver = {
   async openProfile(adsPowerId: string): Promise<DriverResult> {
     return withProfileLock(adsPowerId, async () => {
-      // Cleanup previo (sob o mesmo lock — sem race com outras chamadas)
       const prev = sessions.get(adsPowerId);
       if (prev) {
+        // FIX 13 (13/05/2026): se KEEP_PROFILES_OPEN ativo, testa healthcheck
+        // e REUSA sessao em vez de close+reopen. Antes desse fix,
+        // KEEP_PROFILES_OPEN era meaningless: processor pulava o close no fim
+        // do job, mas openProfile no inicio do proximo job sempre matava
+        // tudo (closeSession + adsPowerClient.stopBrowser). Resultado:
+        // bot sempre abria/fechava AdsPower entre jobs mesmo com a flag ativa.
+        if (env.KEEP_PROFILES_OPEN) {
+          // Codex P1: healthcheck com timeout explicito. Sem isso, se CDP
+          // entrar em estado half-dead (nao desconectado mas hang), evaluate
+          // poderia segurar o withProfileLock indefinidamente, bloqueando
+          // openProfile/closeProfile futuros pra esse perfil.
+          let healthy = false;
+          try {
+            await Promise.race([
+              prev.page.evaluate(() => 1),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('healthcheck_timeout')), 3000)
+              ),
+            ]);
+            healthy = true;
+          } catch {
+            // Codex P2: catch escopado SO no evaluate/timeout. appLog separado
+            // abaixo com seu proprio .catch — log nao deve afetar a decisao
+            // de reuso vs cleanup.
+            healthy = false;
+          }
+          if (healthy) {
+            await appLog({
+              source: 'driver',
+              level: 'info',
+              message: `[real] perfil ${adsPowerId} REUSADO (KEEP_PROFILES_OPEN)`,
+            }).catch(() => undefined);
+            return { ok: true };
+          }
+          // Sessao stale (CDP caiu OU healthcheck timeoutou) — segue pro
+          // path de cleanup+reopen abaixo pra recriar fresh.
+        }
+        // Cleanup previo (sob o mesmo lock — sem race com outras chamadas).
+        // Path tomado quando: KEEP_PROFILES_OPEN=false (default), OU sessao
+        // stale, OU healthcheck falhou.
         sessions.delete(adsPowerId);
         await closeSession(prev);
         await adsPowerClient.stopBrowser(adsPowerId).catch(() => undefined);
