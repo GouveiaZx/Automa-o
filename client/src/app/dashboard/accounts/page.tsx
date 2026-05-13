@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { AdsPowerProfile, Campaign, InstagramAccount } from '@automacao/shared';
-import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2, RotateCw } from 'lucide-react';
+import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2, RotateCw, Link2 } from 'lucide-react';
 import { connectSse } from '@/lib/sse';
 
 interface AccountProgress {
@@ -133,6 +133,39 @@ export default function AccountsPage() {
   }
 
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [autoLinking, setAutoLinking] = useState(false);
+
+  async function autoLinkProfiles() {
+    if (autoLinking) return;
+    setAutoLinking(true);
+    try {
+      const r = await api<{
+        ok: boolean;
+        linked: number;
+        ambiguousCount: number;
+        noMatchCount: number;
+        ambiguous: string[];
+        noMatch: string[];
+      }>('/api/accounts/auto-link', { method: 'POST' });
+      const lines = [
+        `${r.linked} conta(s) vinculada(s) automaticamente`,
+      ];
+      if (r.ambiguousCount > 0) {
+        lines.push(`\n${r.ambiguousCount} ambigua(s) (perfis com mesmo nome):`);
+        lines.push(...r.ambiguous);
+      }
+      if (r.noMatchCount > 0) {
+        lines.push(`\n${r.noMatchCount} sem perfil correspondente:`);
+        lines.push(...r.noMatch);
+      }
+      alert(lines.join('\n'));
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao vincular');
+    } finally {
+      setAutoLinking(false);
+    }
+  }
 
   async function bulkDelete() {
     const ids = Array.from(selected);
@@ -388,6 +421,19 @@ export default function AccountsPage() {
                     </option>
                   ))}
               </select>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={autoLinkProfiles}
+                disabled={autoLinking}
+                title="Vincula automaticamente cada conta IG sem perfil ao perfil AdsPower com mesmo nome"
+              >
+                {autoLinking ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Vinculando...</>
+                ) : (
+                  <><Link2 className="h-4 w-4 mr-2" /> Vincular automaticamente</>
+                )}
+              </Button>
               {selected.size > 0 && (
                 <Button
                   size="sm"

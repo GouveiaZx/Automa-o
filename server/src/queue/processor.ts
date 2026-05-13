@@ -219,6 +219,9 @@ async function onFailure(
           status: 'paused',
           lastFailureAt: new Date(),
           consecutiveFails: { increment: 1 },
+          // FIX 18: marca como auto-pausada pra auto-unpause poder distinguir
+          // de pausa manual via UI (que mantem autoPaused=false).
+          autoPaused: true,
         },
       }),
     ]);

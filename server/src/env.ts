@@ -25,6 +25,10 @@ const schema = z.object({
   // Trade-off: mais RAM (~300-500MB por perfil) vs nao precisa abrir/fechar AdsPower toda vez.
   // Ao fechar a janela do worker, todos os perfis abertos sao fechados via SIGTERM handler.
   KEEP_PROFILES_OPEN: z.coerce.boolean().default(false),
+  // FIX 18: auto-despausa contas paused (por MAX_JOB_ATTEMPTS) apos N horas
+  // de lastFailureAt. 0 = desligado (default — comportamento antigo, user
+  // despausa manual no painel). Range 0-168 (1 semana max).
+  AUTO_UNPAUSE_AFTER_HOURS: z.coerce.number().int().min(0).max(168).default(0),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 });
 

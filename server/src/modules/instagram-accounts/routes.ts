@@ -190,6 +190,66 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     }
   });
 
+  // Auto-link (FIX 18): vincula contas IG SEM perfil AdsPower aos perfis
+  // disponiveis usando match exato case-insensitive entre username e
+  // adsPowerProfile.name. Reduz click-fadiga quando o user importou perfis
+  // em lote (FIX 17) e quer associar 1-pra-1 com as contas IG.
+  // Skipa ambiguous (multiplos perfis com mesmo nome) e no_match.
+  app.post('/accounts/auto-link', async () => {
+    const orphanAccounts = await prisma.instagramAccount.findMany({
+      where: { adsPowerProfileId: null },
+    });
+    const freeProfiles = await prisma.adsPowerProfile.findMany({
+      where: { account: null },
+    });
+
+    let linked = 0;
+    const ambiguous: string[] = [];
+    const noMatch: string[] = [];
+
+    for (const acc of orphanAccounts) {
+      const u = acc.username.toLowerCase();
+      const matches = freeProfiles.filter((p) => p.name.toLowerCase() === u);
+      if (matches.length === 1) {
+        // Codex P2 (TOCTOU): usa updateMany com guard `adsPowerProfileId: null`
+        // pra nao sobrescrever vinculo manual feito entre as 2 queries acima.
+        // Se profile ja foi vinculado por outro lado (P2002), ignora silenciosamente.
+        try {
+          const r = await prisma.instagramAccount.updateMany({
+            where: { id: acc.id, adsPowerProfileId: null },
+            data: { adsPowerProfileId: matches[0].id },
+          });
+          if (r.count > 0) {
+            const idx = freeProfiles.indexOf(matches[0]);
+            if (idx >= 0) freeProfiles.splice(idx, 1);
+            linked++;
+          }
+          // r.count === 0 = conta ja foi vinculada entre as queries; skip silent
+        } catch (err: unknown) {
+          // P2002 = unique constraint violation (perfil ja vinculado em outra conta).
+          // Outros erros: log e segue.
+          const code = (err as { code?: string }).code;
+          if (code !== 'P2002') {
+            // segue, conta fica skipped
+          }
+        }
+      } else if (matches.length > 1) {
+        ambiguous.push(`@${acc.username} (${matches.length} perfis com mesmo nome)`);
+      } else {
+        noMatch.push(`@${acc.username}`);
+      }
+    }
+
+    return {
+      ok: true,
+      linked,
+      ambiguousCount: ambiguous.length,
+      noMatchCount: noMatch.length,
+      ambiguous: ambiguous.slice(0, 10),
+      noMatch: noMatch.slice(0, 10),
+    };
+  });
+
   // Bulk delete (FIX 14): exclui N contas IG de uma vez. Usa deleteMany numa
   // transacao implicita do Prisma — atomico. Jobs/media relacionados sao
   // tratados pelas FKs do schema (cascade onde definido).

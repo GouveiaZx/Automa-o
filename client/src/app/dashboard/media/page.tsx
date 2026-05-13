@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { api, apiBaseUrl } from '@/lib/api';
 import type { Campaign, InstagramAccount, MediaItem } from '@automacao/shared';
 import { formatDateTime } from '@/lib/utils';
-import { Trash2, Upload } from 'lucide-react';
+import { Trash2, Upload, FolderInput, Loader2 } from 'lucide-react';
 
 const MAX_FILES_PER_BATCH = 50;
 
@@ -28,6 +28,54 @@ export default function MediaPage() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // FIX 18 — Importar pasta inteira
+  const [folderPath, setFolderPath] = useState('');
+  const [folderCampaignId, setFolderCampaignId] = useState('');
+  const [folderType, setFolderType] = useState<'reel' | 'story' | 'photo'>('reel');
+  const [folderTag, setFolderTag] = useState('');
+  const [folderImporting, setFolderImporting] = useState(false);
+
+  async function importFolder() {
+    if (!folderPath.trim() || !folderCampaignId) {
+      alert('Preenche pasta e campanha');
+      return;
+    }
+    setFolderImporting(true);
+    try {
+      const r = await api<{
+        ok: boolean;
+        imported: number;
+        skipped: number;
+        totalEntries: number;
+        truncated: boolean;
+        errors: string[];
+      }>('/api/media/import-folder', {
+        method: 'POST',
+        body: {
+          campaignId: folderCampaignId,
+          folderPath: folderPath.trim(),
+          type: folderType,
+          tag: folderTag.trim() || null,
+        },
+      });
+      const lines = [
+        `${r.imported} arquivo(s) importado(s)`,
+        `${r.skipped} ignorado(s) (extensao nao suportada ou tamanho)`,
+        `${r.totalEntries} arquivo(s) na pasta`,
+      ];
+      if (r.truncated) lines.push('LIMITE de 200 arquivos por importacao atingido');
+      if (r.errors.length > 0) lines.push('\nErros:\n' + r.errors.join('\n'));
+      alert(lines.join('\n'));
+      setFolderPath('');
+      setFolderTag('');
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao importar');
+    } finally {
+      setFolderImporting(false);
+    }
+  }
 
   async function load() {
     const [m, c, a] = await Promise.all([
@@ -173,6 +221,78 @@ export default function MediaPage() {
           Upload de Stories e Reels (mp4/mov/jpg/png, máx 200MB).
         </p>
       </header>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FolderInput className="h-4 w-4" /> Importar pasta inteira
+          </CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            Aponta uma pasta no PC com os videos prontos. O sistema le todos os arquivos suportados
+            e cria 1 midia por arquivo na campanha escolhida. Maximo 200 arquivos por importacao.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1 md:col-span-2">
+              <Label>Caminho da pasta</Label>
+              <Input
+                placeholder="C:\Users\Voce\Downloads\Videos"
+                value={folderPath}
+                onChange={(e) => setFolderPath(e.target.value)}
+                disabled={folderImporting}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Campanha</Label>
+              <select
+                className="border rounded-md h-9 px-3 w-full bg-background"
+                value={folderCampaignId}
+                onChange={(e) => setFolderCampaignId(e.target.value)}
+                disabled={folderImporting}
+              >
+                <option value="">— escolhe campanha —</option>
+                {campaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>Tipo</Label>
+              <select
+                className="border rounded-md h-9 px-3 w-full bg-background"
+                value={folderType}
+                onChange={(e) => setFolderType(e.target.value as 'reel' | 'story' | 'photo')}
+                disabled={folderImporting}
+              >
+                <option value="reel">Reel</option>
+                <option value="story">Story</option>
+                <option value="photo">Foto</option>
+              </select>
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label>Tag (opcional)</Label>
+              <Input
+                placeholder="ex: lote_maio"
+                value={folderTag}
+                onChange={(e) => setFolderTag(e.target.value)}
+                disabled={folderImporting}
+              />
+            </div>
+            <div className="md:col-span-2 flex justify-end">
+              <Button onClick={importFolder} disabled={folderImporting || !folderPath || !folderCampaignId}>
+                {folderImporting ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Importando...</>
+                ) : (
+                  <><FolderInput className="h-4 w-4 mr-2" /> Importar pasta</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

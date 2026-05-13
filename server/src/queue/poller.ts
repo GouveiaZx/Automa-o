@@ -19,7 +19,9 @@ const STUCK_QUEUED_DIAGNOSE_INTERVAL_MS = 2 * 60 * 1000; // 2 min — diagnostic
 const STUCK_QUEUED_THRESHOLD_MS = 10 * 60 * 1000; // job queued ha > 10min apos scheduledFor eh "preso"
 const SKIP_REPORT_INTERVAL_MS = 5 * 60 * 1000; // 5 min entre reports de "jobs pulados pelo cap"
 const SET_RECONCILE_INTERVAL_TICKS = 12; // ~1 min em ticks de 5s
+const AUTO_UNPAUSE_INTERVAL_MS = 5 * 60 * 1000; // 5 min — checa contas pra despausar
 let lastStuckDiagnoseAt = 0;
+let lastAutoUnpauseAt = 0;
 
 // Estado exportado pra endpoint de diagnostico
 export function getWorkerState() {
@@ -253,6 +255,36 @@ async function getAllowedAccountIds(cap: number): Promise<Set<string>> {
   return new Set(accounts.map((a) => a.id));
 }
 
+// FIX 18: despausa contas que ficaram paused por mais de
+// AUTO_UNPAUSE_AFTER_HOURS desde o lastFailureAt. Default 0 = desligado
+// (comportamento antigo, user despausa manual). Reset consecutiveFails
+// pra dar fresh start.
+async function autoUnpauseAccounts(): Promise<void> {
+  if (env.AUTO_UNPAUSE_AFTER_HOURS <= 0) return;
+  const cutoff = new Date(Date.now() - env.AUTO_UNPAUSE_AFTER_HOURS * 3600_000);
+  const result = await prisma.instagramAccount.updateMany({
+    where: {
+      status: 'paused',
+      // Codex P2: SO auto-unpause as que foram auto-pausadas pelo worker.
+      // Pausa manual via UI mantem autoPaused=false e nao eh tocada.
+      autoPaused: true,
+      lastFailureAt: { lt: cutoff },
+    },
+    data: {
+      status: 'active',
+      consecutiveFails: 0,
+      autoPaused: false,
+    },
+  });
+  if (result.count > 0) {
+    await appLog({
+      source: 'worker',
+      level: 'info',
+      message: `[auto-unpause] ${result.count} conta(s) despausada(s) apos ${env.AUTO_UNPAUSE_AFTER_HOURS}h sem nova falha`,
+    });
+  }
+}
+
 async function processOnce(): Promise<void> {
   // Cleanup oportunista de logs antigos (1x/dia)
   if (Date.now() - lastLogCleanupAt > LOG_CLEANUP_INTERVAL_MS) {
@@ -279,6 +311,13 @@ async function processOnce(): Promise<void> {
   if (Date.now() - lastStuckDiagnoseAt > STUCK_QUEUED_DIAGNOSE_INTERVAL_MS) {
     lastStuckDiagnoseAt = Date.now();
     void diagnoseStuckQueued().catch((e) => console.error('[worker] diagnose stuck falhou:', e));
+  }
+
+  // FIX 18: auto-unpause periodico (a cada 5 min). No-op se
+  // AUTO_UNPAUSE_AFTER_HOURS=0 (default).
+  if (Date.now() - lastAutoUnpauseAt > AUTO_UNPAUSE_INTERVAL_MS) {
+    lastAutoUnpauseAt = Date.now();
+    void autoUnpauseAccounts().catch((e) => console.error('[worker] auto-unpause falhou:', e));
   }
 
   // Reconcile defensivo (a cada N ticks): valida inFlight contra DB.

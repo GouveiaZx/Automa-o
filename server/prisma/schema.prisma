@@ -54,6 +54,10 @@ model InstagramAccount {
   status            String           @default("active")
   lastFailureAt     DateTime?
   consecutiveFails  Int              @default(0)
+  // FIX 18: distingue auto-pausada (worker apos MAX_JOB_ATTEMPTS) de pausada
+  // manual (user via UI). auto-unpause no poller so re-ativa as auto-pausadas
+  // — respeita intencao do user de manter "paused manual".
+  autoPaused        Boolean          @default(false)
   campaignId        String?
   campaign          Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   adsPowerProfileId String?          @unique

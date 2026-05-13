@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, writeFile, unlink, readdir, copyFile, stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import { z } from 'zod';
 import { mediaInputSchema } from '@automacao/shared';
 import { prisma } from '../../prisma.js';
 
@@ -110,5 +111,91 @@ export async function mediaRoutes(app: FastifyInstance) {
     }
     await prisma.mediaItem.delete({ where: { id } });
     return { ok: true };
+  });
+
+  // Import folder (FIX 18): le todos os arquivos validos de uma pasta local
+  // e copia pra MEDIA_DIR + cria MediaItem pra cada um. Reduz click-fadiga
+  // quando o user tem dezenas de videos prontos pra postar numa campanha.
+  // Modelo single-PC: server e client rodam na mesma maquina, entao server
+  // pode acessar pasta no PC do user via path absoluto.
+  app.post('/media/import-folder', async (req, reply) => {
+    const parsed = z.object({
+      campaignId: z.string().min(1),
+      folderPath: z.string().min(1),
+      type: z.enum(['reel', 'story', 'photo']),
+      tag: z.string().optional().nullable(),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'invalid_body', details: parsed.error.flatten() });
+    }
+    const { campaignId, folderPath, type, tag } = parsed.data;
+
+    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaign) return reply.status(400).send({ error: 'campaign_not_found' });
+
+    let entries: string[];
+    try {
+      entries = await readdir(folderPath);
+    } catch (err) {
+      return reply.status(400).send({
+        error: 'folder_unreadable',
+        reason: err instanceof Error ? err.message : 'unknown',
+      });
+    }
+
+    const MAX_FILES = 200;
+    const truncated = entries.length > MAX_FILES;
+    const candidates = entries.slice(0, MAX_FILES);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const name of candidates) {
+      const ext = extname(name).toLowerCase();
+      if (!ALLOWED.has(ext)) { skipped++; continue; }
+      const src = join(folderPath, name);
+      try {
+        const st = await stat(src);
+        if (!st.isFile()) { skipped++; continue; }
+        if (st.size > MAX_SIZE_MB * 1024 * 1024) {
+          skipped++;
+          errors.push(`${name}: muito grande (>${MAX_SIZE_MB}MB)`);
+          continue;
+        }
+        const safeName = `${randomUUID()}${ext}`;
+        const dest = join(MEDIA_DIR, safeName);
+        await copyFile(src, dest);
+        // Codex P2: cleanup do arquivo copiado se DB insert falhar — evita
+        // arquivos orfaos em MEDIA_DIR consumindo disco sem entry no DB.
+        try {
+          await prisma.mediaItem.create({
+            data: {
+              type,
+              filePath: safeName,
+              caption: null,
+              linkUrl: null,
+              tag: tag ?? null,
+              campaignId,
+            },
+          });
+          imported++;
+        } catch (dbErr) {
+          await unlink(dest).catch(() => undefined);
+          throw dbErr;
+        }
+      } catch (err) {
+        errors.push(`${name}: ${err instanceof Error ? err.message : 'erro'}`);
+      }
+    }
+
+    return {
+      ok: true,
+      imported,
+      skipped,
+      totalEntries: entries.length,
+      truncated,
+      errors: errors.slice(0, 10),
+    };
   });
 }
