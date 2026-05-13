@@ -483,7 +483,55 @@ async function tryPostRealStory(args: PostArgs): Promise<DriverResult> {
  * Funciona para POST regular (foto/vídeo no feed).
  * Usado tambem como fallback quando postStory nao consegue acessar /stories/create/.
  */
+// FIX 16 (13/05/2026): wrapper que chama postViaCreateModalAttempt com attempt=0.
+// Atttempt eh incrementado quando o flow detecta "dialog perdido" (Step 3-4 ou
+// Step 6 falha sem ter dialog visivel) e faz F5 + restart. Limita a 1 retry.
 async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
+  return postViaCreateModalAttempt(args, 0);
+}
+
+async function captureFailureDiag(page: Page, tag: string): Promise<void> {
+  // FIX 16: snapshot do estado da pagina quando flow falha — permite ver no log
+  // se dialog "sumiu" (dialogCount=0) ou se mudou de forma.
+  // Codex P2: timeout de 3s pra evitar wedge se renderer travado segurar o
+  // page.evaluate indefinidamente bloqueando o flow no exato ponto flake.
+  try {
+    const visibles = await Promise.race([
+      page.evaluate(() => {
+        const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+        const visibleDialogs = dialogs.filter((d) => {
+          const r = (d as HTMLElement).getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+        return {
+          url: location.href,
+          dialogCount: visibleDialogs.length,
+          dialogPreview: visibleDialogs.slice(0, 2).map((d) => ({
+            aria: (d.getAttribute('aria-label') || '').slice(0, 80),
+            textPreview: (d.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 150),
+          })),
+        };
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('diag_timeout')), 3000)
+      ),
+    ]);
+    await appLog({
+      source: 'driver',
+      level: 'warn',
+      message: `[${tag}] url=${visibles.url} dialogs=${visibles.dialogCount} preview=${JSON.stringify(visibles.dialogPreview)}`,
+    });
+  } catch (err) {
+    // Codex nit: log warn em vez de swallow silente — eh raro mas vale rastrear
+    await appLog({
+      source: 'driver',
+      level: 'warn',
+      message: `[${tag}] diag falhou: ${err instanceof Error ? err.message : 'unknown'}`,
+    }).catch(() => undefined);
+  }
+}
+
+async function postViaCreateModalAttempt(args: PostArgs, attempt: number): Promise<DriverResult> {
   const page = await getPage(args.adsPowerId);
   try {
     await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined);
@@ -1025,6 +1073,21 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
           // senao deixa Step 5/6 tentarem).
           if (advanceClicks === 0) {
             const dbg = await captureDebug(page, 'no-advance-1-all-strategies-failed');
+            await captureFailureDiag(page, 'step3-diag');
+            // FIX 16: se for primeira tentativa do job, F5 + restart pode
+            // recuperar (dialog perdido, IG em transient state, etc).
+            if (attempt < 1) {
+              await appLog({
+                source: 'driver',
+                level: 'warn',
+                message: `[fix16-reload] @${args.igUsername ?? '?'} no_advance no Step 3-4 — tentando F5 + restart (attempt ${attempt + 1})`,
+              });
+              try {
+                await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
+                await humanDelay(2000, 3000);
+              } catch { /* segue, o proximo flow vai dar erro consistente */ }
+              return postViaCreateModalAttempt(args, attempt + 1);
+            }
             return { ok: false, reason: `no_advance_after_upload ${dbg.screenshot ?? ''}` };
           }
           stuckAfterAdvance = true;
@@ -1214,6 +1277,22 @@ async function postViaCreateModal(args: PostArgs): Promise<DriverResult> {
 
     if (!(await clickShareMultiStrategy())) {
       const dbg = await captureDebug(page, 'no-share-btn');
+      await captureFailureDiag(page, 'step6-diag');
+      // FIX 16: dialog provavelmente sumiu (caso real: @alvesfatimamoraes,
+      // HTML de no-share-btn mostrava pagina de feed do IG, nao /create/).
+      // F5 + restart pode recuperar se foi flake transient.
+      if (attempt < 1) {
+        await appLog({
+          source: 'driver',
+          level: 'warn',
+          message: `[fix16-reload] @${args.igUsername ?? '?'} share_button_not_found no Step 6 — tentando F5 + restart (attempt ${attempt + 1})`,
+        });
+        try {
+          await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
+          await humanDelay(2000, 3000);
+        } catch { /* segue, proximo flow vai dar erro consistente */ }
+        return postViaCreateModalAttempt(args, attempt + 1);
+      }
       return { ok: false, reason: `share_button_not_found ${dbg.screenshot ?? ''}` };
     }
 
