@@ -149,9 +149,15 @@ export async function processJob(jobId: string): Promise<void> {
       await onFailure(job.id, reason, job.attempts, job.accountId);
     }
 
-    // Em erro: fecha perfil pra evitar sessao zumbi/inconsistente, mesmo com KEEP_PROFILES_OPEN.
-    // Proximo job que precisar do mesmo adsPowerId vai abrir um perfil limpo.
-    await driver.closeProfile(adsId).catch(() => undefined);
+    // FIX 15 (13/05/2026): respeita KEEP_PROFILES_OPEN tambem no error path.
+    // Antes fechava sempre "pra evitar sessao zumbi", mas o healthcheck do
+    // openProfile (FIX 13) ja detecta sessao broken no proximo job e reabre
+    // se necessario — entao o close aqui era defesa redundante.
+    // User pediu pra deixar perfis sempre online ("vc nao quer deixar os
+    // perfis online direto? Cara eu acho melhor").
+    if (!env.KEEP_PROFILES_OPEN) {
+      await driver.closeProfile(adsId).catch(() => undefined);
+    }
   }
 }
 

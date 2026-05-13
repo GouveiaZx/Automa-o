@@ -2,6 +2,7 @@ import net from 'node:net';
 import { startWorker, stopWorker } from './queue/poller.js';
 import { prisma } from './prisma.js';
 import { getDriver } from './automation/driver.js';
+import { env } from './env.js';
 
 const WORKER_LOCK_PORT = 39102; // porta loopback usada como mutex cross-platform
 
@@ -41,19 +42,26 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     stopWorker();
-    // Fecha qualquer perfil AdsPower / browser Playwright que esteja aberto
-    // para evitar Chromium zumbi consumindo RAM ate reboot.
+    // FIX 15 (13/05/2026): se KEEP_PROFILES_OPEN ativo, NAO fecha as sessoes
+    // — deixa os browsers AdsPower abertos entre reinicios do worker. User
+    // gerencia AdsPower manualmente (pediu pra deixar online direto).
+    // Se flag desativa: fecha qualquer perfil AdsPower / browser Playwright
+    // aberto para evitar Chromium zumbi consumindo RAM ate reboot.
     const driver = getDriver();
-    const openIds = driver.getOpenSessionIds?.() ?? [];
-    if (openIds.length > 0) {
-      console.log(`[worker] fechando ${openIds.length} sessao(oes) AdsPower abertas...`);
-      await Promise.all(
-        openIds.map((id) =>
-          driver.closeProfile(id).catch((err) => {
-            console.error(`[worker] erro fechando perfil ${id}:`, err);
-          })
-        )
-      );
+    if (!env.KEEP_PROFILES_OPEN) {
+      const openIds = driver.getOpenSessionIds?.() ?? [];
+      if (openIds.length > 0) {
+        console.log(`[worker] fechando ${openIds.length} sessao(oes) AdsPower abertas...`);
+        await Promise.all(
+          openIds.map((id) =>
+            driver.closeProfile(id).catch((err) => {
+              console.error(`[worker] erro fechando perfil ${id}:`, err);
+            })
+          )
+        );
+      }
+    } else {
+      console.log('[worker] KEEP_PROFILES_OPEN=true — deixando sessoes AdsPower abertas');
     }
     await prisma.$disconnect();
     lock.close();
