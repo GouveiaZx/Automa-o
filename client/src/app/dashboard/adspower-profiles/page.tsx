@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { AdsPowerProfile } from '@automacao/shared';
-import { Trash2, Plus, Loader2 } from 'lucide-react';
+import { Trash2, Plus, Loader2, RefreshCw } from 'lucide-react';
 
 type AdsPowerProfileWithAccount = AdsPowerProfile & {
   account?: { id: string; username: string } | null;
@@ -22,6 +22,7 @@ export default function AdsPowerProfilesPage() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   async function load() {
     setItems(await api<AdsPowerProfileWithAccount[]>('/api/adspower-profiles'));
@@ -66,6 +67,30 @@ export default function AdsPowerProfilesPage() {
     else setSelected(new Set(items.map((p) => p.id)));
   }
 
+  async function syncFromAdsPower() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const r = await api<{ ok: boolean; fetched: number; created: number; updated: number; skipped: number }>(
+        '/api/adspower-profiles/sync',
+        { method: 'POST' }
+      );
+      const parts = [
+        `${r.fetched} perfis lidos do AdsPower`,
+        `${r.created} novos criados`,
+        `${r.updated} atualizados`,
+      ];
+      if (r.skipped > 0) parts.push(`${r.skipped} ignorados (sem id ou nome)`);
+      alert(parts.join('\n'));
+      load();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'erro';
+      alert(`Falha ao sincronizar:\n${msg}\n\nO AdsPower está aberto?`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function bulkDelete() {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
@@ -92,11 +117,20 @@ export default function AdsPowerProfilesPage() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h2 className="text-2xl font-semibold">Perfis AdsPower</h2>
-        <p className="text-sm text-muted-foreground">
-          Cada perfil representa um navegador AdsPower já configurado/logado pelo operador.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-semibold">Perfis AdsPower</h2>
+          <p className="text-sm text-muted-foreground">
+            Cada perfil representa um navegador AdsPower já configurado/logado pelo operador.
+          </p>
+        </div>
+        <Button onClick={syncFromAdsPower} disabled={syncing}>
+          {syncing ? (
+            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Sincronizando...</>
+          ) : (
+            <><RefreshCw className="h-4 w-4 mr-2" /> Sincronizar do AdsPower</>
+          )}
+        </Button>
       </header>
 
       <Card>
