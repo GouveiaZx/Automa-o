@@ -10,15 +10,21 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { AdsPowerProfile } from '@automacao/shared';
-import { Trash2, Plus } from 'lucide-react';
+import { Trash2, Plus, Loader2 } from 'lucide-react';
+
+type AdsPowerProfileWithAccount = AdsPowerProfile & {
+  account?: { id: string; username: string } | null;
+};
 
 export default function AdsPowerProfilesPage() {
-  const [items, setItems] = useState<AdsPowerProfile[]>([]);
+  const [items, setItems] = useState<AdsPowerProfileWithAccount[]>([]);
   const [form, setForm] = useState({ adsPowerId: '', name: '', notes: '' });
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   async function load() {
-    setItems(await api<AdsPowerProfile[]>('/api/adspower-profiles'));
+    setItems(await api<AdsPowerProfileWithAccount[]>('/api/adspower-profiles'));
   }
 
   useEffect(() => {
@@ -44,6 +50,44 @@ export default function AdsPowerProfilesPage() {
     if (!confirm('Excluir perfil?')) return;
     await api(`/api/adspower-profiles/${id}`, { method: 'DELETE' });
     load();
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    if (selected.size === items.length) setSelected(new Set());
+    else setSelected(new Set(items.map((p) => p.id)));
+  }
+
+  async function bulkDelete() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const linked = items.filter((p) => ids.includes(p.id) && p.account).length;
+    const warnLinked = linked > 0
+      ? `\n\nATENCAO: ${linked} perfil(is) tem conta Instagram vinculada. As contas IG NAO sao deletadas — so ficam SEM perfil (precisa vincular a outro depois ou deletar a conta tambem).`
+      : '';
+    if (!confirm(`EXCLUIR ${ids.length} perfil(is) AdsPower do painel?${warnLinked}\n\nAcao IRREVERSIVEL.`)) return;
+    setBulkDeleting(true);
+    try {
+      const r = await api<{ ok: boolean; deleted: number }>('/api/adspower-profiles/bulk-delete', {
+        method: 'POST',
+        body: { ids },
+      });
+      alert(`${r.deleted} perfil(is) excluido(s).`);
+      setSelected(new Set());
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao excluir');
+    } finally {
+      setBulkDeleting(false);
+    }
   }
 
   return (
@@ -99,12 +143,39 @@ export default function AdsPowerProfilesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Existentes</CardTitle>
+          <CardTitle className="flex items-center justify-between">
+            <span>Existentes</span>
+            {selected.size > 0 && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={bulkDelete}
+                disabled={bulkDeleting}
+              >
+                {bulkDeleting ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Excluindo...</>
+                ) : (
+                  <><Trash2 className="h-4 w-4 mr-2" /> Excluir {selected.size} selecionado{selected.size > 1 ? 's' : ''}</>
+                )}
+              </Button>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && selected.size === items.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selected.size > 0 && selected.size < items.length;
+                    }}
+                    onChange={toggleAll}
+                    aria-label="Selecionar todos"
+                  />
+                </TableHead>
                 <TableHead>Nome</TableHead>
                 <TableHead>AdsPower ID</TableHead>
                 <TableHead>Status</TableHead>
@@ -114,7 +185,15 @@ export default function AdsPowerProfilesPage() {
             </TableHeader>
             <TableBody>
               {items.map((p) => (
-                <TableRow key={p.id}>
+                <TableRow key={p.id} data-state={selected.has(p.id) ? 'selected' : undefined}>
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(p.id)}
+                      onChange={() => toggleSelect(p.id)}
+                      aria-label={`Selecionar ${p.name}`}
+                    />
+                  </TableCell>
                   <TableCell className="font-medium">{p.name}</TableCell>
                   <TableCell className="font-mono text-xs">{p.adsPowerId}</TableCell>
                   <TableCell>
@@ -132,7 +211,7 @@ export default function AdsPowerProfilesPage() {
               ))}
               {!items.length && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
                     Nenhum perfil cadastrado.
                   </TableCell>
                 </TableRow>

@@ -132,6 +132,33 @@ export default function AccountsPage() {
     load();
   }
 
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  async function bulkDelete() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (
+      !confirm(
+        `EXCLUIR ${ids.length} conta${ids.length > 1 ? 's' : ''} Instagram do painel?\n\nIsso apaga as contas e todos os jobs/historico delas. NAO afeta o IG nem o AdsPower — so remove do painel. Acao IRREVERSIVEL.`
+      )
+    )
+      return;
+    setBulkDeleting(true);
+    try {
+      const r = await api<{ ok: boolean; deleted: number }>('/api/accounts/bulk-delete', {
+        method: 'POST',
+        body: { ids },
+      });
+      alert(`${r.deleted} conta(s) excluida(s).`);
+      setSelected(new Set());
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao excluir');
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -386,6 +413,20 @@ export default function AccountsPage() {
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Reagendando {bulkRestartProgress.done}/{bulkRestartProgress.total}...</>
                   ) : (
                     <><RotateCw className="h-4 w-4 mr-2" /> Reagendar {selected.size} ciclo{selected.size > 1 ? 's' : ''}</>
+                  )}
+                </Button>
+              )}
+              {selected.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={bulkDelete}
+                  disabled={bulkDeleting || bulkRestarting || bulkValidating}
+                >
+                  {bulkDeleting ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Excluindo...</>
+                  ) : (
+                    <><Trash2 className="h-4 w-4 mr-2" /> Excluir {selected.size} selecionada{selected.size > 1 ? 's' : ''}</>
                   )}
                 </Button>
               )}

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { instagramAccountInputSchema, accountStatusUpdateSchema, syncBioSchema } from '@automacao/shared';
 import { prisma } from '../../prisma.js';
 import { bus } from '../../events.js';
@@ -187,6 +188,18 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     } catch {
       return reply.status(404).send({ error: 'not_found' });
     }
+  });
+
+  // Bulk delete (FIX 14): exclui N contas IG de uma vez. Usa deleteMany numa
+  // transacao implicita do Prisma — atomico. Jobs/media relacionados sao
+  // tratados pelas FKs do schema (cascade onde definido).
+  app.post('/accounts/bulk-delete', async (req, reply) => {
+    const parsed = z.object({ ids: z.array(z.string()).min(1) }).safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid_body' });
+    const result = await prisma.instagramAccount.deleteMany({
+      where: { id: { in: parsed.data.ids } },
+    });
+    return { ok: true, deleted: result.count };
   });
 
   // Progresso por conta — agregado de jobs do dia (queued/running/retry/failed/done).

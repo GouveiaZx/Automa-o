@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { adsPowerProfileInputSchema } from '@automacao/shared';
 import { prisma } from '../../prisma.js';
 
@@ -61,5 +62,18 @@ export async function adsPowerProfileRoutes(app: FastifyInstance) {
     } catch {
       return reply.status(404).send({ error: 'not_found' });
     }
+  });
+
+  // Bulk delete (FIX 14): exclui N perfis AdsPower de uma vez. Schema tem
+  // InstagramAccount.adsPowerProfileId com onDelete: SetNull — entao contas
+  // IG vinculadas NAO sao deletadas, so ficam orfas (adsPowerProfileId=null).
+  // UI deve avisar o user disso.
+  app.post('/adspower-profiles/bulk-delete', async (req, reply) => {
+    const parsed = z.object({ ids: z.array(z.string()).min(1) }).safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid_body' });
+    const result = await prisma.adsPowerProfile.deleteMany({
+      where: { id: { in: parsed.data.ids } },
+    });
+    return { ok: true, deleted: result.count };
   });
 }

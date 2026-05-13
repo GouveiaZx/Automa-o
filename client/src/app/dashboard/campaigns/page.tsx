@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { Campaign } from '@automacao/shared';
-import { Trash2, Plus } from 'lucide-react';
+import { Trash2, Plus, Pencil, X } from 'lucide-react';
 
 const empty = {
   name: '',
@@ -30,6 +30,7 @@ export default function CampaignsPage() {
   const [form, setForm] = useState(empty);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   async function load() {
     setItems(await api<Campaign[]>('/api/campaigns'));
@@ -44,15 +45,18 @@ export default function CampaignsPage() {
     setBusy(true);
     setError(null);
     try {
-      await api('/api/campaigns', {
-        method: 'POST',
-        body: {
-          ...form,
-          description: form.description || null,
-          fixedTimes: form.fixedTimes.trim() || null,
-        },
-      });
+      const body = {
+        ...form,
+        description: form.description || null,
+        fixedTimes: form.fixedTimes.trim() || null,
+      };
+      if (editingId) {
+        await api(`/api/campaigns/${editingId}`, { method: 'PUT', body });
+      } else {
+        await api('/api/campaigns', { method: 'POST', body });
+      }
       setForm(empty);
+      setEditingId(null);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'erro');
@@ -61,9 +65,34 @@ export default function CampaignsPage() {
     }
   }
 
+  function startEdit(c: Campaign) {
+    setForm({
+      name: c.name,
+      description: c.description ?? '',
+      windowStart: c.windowStart,
+      windowEnd: c.windowEnd,
+      minIntervalMin: c.minIntervalMin,
+      maxIntervalMin: c.maxIntervalMin,
+      storiesPerDay: c.storiesPerDay,
+      reelsPerDay: c.reelsPerDay,
+      fixedTimes: c.fixedTimes ?? '',
+      active: c.active,
+    });
+    setEditingId(c.id);
+    setError(null);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function cancelEdit() {
+    setForm(empty);
+    setEditingId(null);
+    setError(null);
+  }
+
   async function remove(id: string) {
     if (!confirm('Excluir esta campanha?')) return;
     await api(`/api/campaigns/${id}`, { method: 'DELETE' });
+    if (editingId === id) cancelEdit();
     load();
   }
 
@@ -79,7 +108,15 @@ export default function CampaignsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Plus className="h-4 w-4" /> Nova campanha
+            {editingId ? (
+              <>
+                <Pencil className="h-4 w-4" /> Editando: {form.name || '(sem nome)'}
+              </>
+            ) : (
+              <>
+                <Plus className="h-4 w-4" /> Nova campanha
+              </>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -164,9 +201,14 @@ export default function CampaignsPage() {
               </p>
             </div>
             {error && <p className="text-destructive text-sm md:col-span-2">{error}</p>}
-            <div className="md:col-span-2 flex justify-end">
+            <div className="md:col-span-2 flex justify-end gap-2">
+              {editingId && (
+                <Button type="button" variant="outline" onClick={cancelEdit} disabled={busy}>
+                  <X className="h-4 w-4 mr-1" /> Cancelar
+                </Button>
+              )}
               <Button type="submit" disabled={busy}>
-                {busy ? 'Salvando...' : 'Criar'}
+                {busy ? 'Salvando...' : editingId ? 'Atualizar' : 'Criar'}
               </Button>
             </div>
           </form>
@@ -210,9 +252,24 @@ export default function CampaignsPage() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="icon" onClick={() => remove(c.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => startEdit(c)}
+                        title="Editar campanha"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => remove(c.id)}
+                        title="Excluir campanha"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
