@@ -64,7 +64,19 @@ echo.
 echo [5/6] Aplicando migrations do banco (se houver)...
 call npm run db:migrate
 if errorlevel 1 (
-    echo [AVISO] db:migrate retornou erro.
+    echo.
+    echo ============================================
+    echo [ERRO] db:migrate falhou!
+    echo ============================================
+    echo Se aparecer "Internal Server Error" depois no painel, eh por
+    echo causa disso (Prisma client tem campo novo, banco nao).
+    echo.
+    echo Tenta rodar manual:
+    echo   cd server
+    echo   npx prisma migrate deploy
+    echo.
+    echo Se persistir, me chama no Workana.
+    pause
 )
 
 echo.

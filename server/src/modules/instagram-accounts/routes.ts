@@ -200,7 +200,7 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
       where: { adsPowerProfileId: null },
     });
     const freeProfiles = await prisma.adsPowerProfile.findMany({
-      where: { account: null },
+      where: { account: { is: null } },
     });
 
     let linked = 0;
@@ -351,6 +351,7 @@ function serializeAccount(a: {
   status: string;
   lastFailureAt: Date | null;
   consecutiveFails: number;
+  autoPaused: boolean;
   campaignId: string | null;
   adsPowerProfileId: string | null;
 }) {
@@ -364,6 +365,7 @@ function serializeAccount(a: {
     status: a.status as 'active' | 'paused' | 'needs_login' | 'error',
     lastFailureAt: a.lastFailureAt ? a.lastFailureAt.toISOString() : null,
     consecutiveFails: a.consecutiveFails,
+    autoPaused: a.autoPaused,
     campaignId: a.campaignId,
     adsPowerProfileId: a.adsPowerProfileId,
   };

@@ -41,6 +41,9 @@ export interface InstagramAccount {
   status: AccountStatus;
   lastFailureAt: string | null;
   consecutiveFails: number;
+  // FIX 18: distingue auto-pausada (worker) de pausada manual (user via UI).
+  // Auto-unpause no poller so re-ativa as auto-pausadas.
+  autoPaused: boolean;
   campaignId: string | null;
   campaign?: Campaign | null;
   adsPowerProfileId: string | null;
