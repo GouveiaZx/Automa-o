@@ -3,6 +3,7 @@ import { startWorker, stopWorker } from './queue/poller.js';
 import { prisma } from './prisma.js';
 import { getDriver } from './automation/driver.js';
 import { env } from './env.js';
+import { ensureMigrationsOrExit } from './db-init.js';
 
 const WORKER_LOCK_PORT = 39102; // porta loopback usada como mutex cross-platform
 
@@ -35,6 +36,10 @@ async function main() {
     console.error('[worker] ' + (err instanceof Error ? err.message : String(err)));
     process.exit(1);
   }
+
+  // FIX 19: aplica migrations pendentes antes de startWorker (que vai
+  // emitir queries Prisma). Defesa em profundidade contra schema/db mismatch.
+  await ensureMigrationsOrExit('worker');
 
   await startWorker();
   let shuttingDown = false;
