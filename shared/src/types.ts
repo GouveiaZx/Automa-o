@@ -46,6 +46,9 @@ export interface InstagramAccount {
   // FIX 18: distingue auto-pausada (worker) de pausada manual (user via UI).
   // Auto-unpause no poller so re-ativa as auto-pausadas.
   autoPaused: boolean;
+  // FIX 21: contador de seguidores capturado quando bot loga/posta.
+  followersCount: number | null;
+  followersUpdatedAt: string | null;
   campaignId: string | null;
   campaign?: Campaign | null;
   adsPowerProfileId: string | null;

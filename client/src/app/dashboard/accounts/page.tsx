@@ -137,6 +137,35 @@ export default function AccountsPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [autoLinking, setAutoLinking] = useState(false);
   const [autoCreating, setAutoCreating] = useState(false);
+  const [syncingFollowers, setSyncingFollowers] = useState(false);
+
+  async function syncFollowers() {
+    if (syncingFollowers) return;
+    if (!confirm('Sincronizar seguidores de TODAS as contas com perfil vinculado?\n\nLento (1 conta por vez, ~10s cada). Pode demorar varios minutos se voce tiver muitas contas.')) return;
+    setSyncingFollowers(true);
+    try {
+      const r = await api<{
+        ok: boolean;
+        total: number;
+        updated: number;
+        failedCount: number;
+        failed: string[];
+      }>('/api/accounts/sync-followers', { method: 'POST' });
+      const lines = [
+        `${r.updated} de ${r.total} conta(s) atualizada(s)`,
+      ];
+      if (r.failedCount > 0) {
+        lines.push(`${r.failedCount} falha(s):`);
+        lines.push(...r.failed);
+      }
+      alert(lines.join('\n'));
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao sincronizar');
+    } finally {
+      setSyncingFollowers(false);
+    }
+  }
 
   async function autoCreateFromProfiles() {
     if (autoCreating) return;
@@ -517,6 +546,19 @@ export default function AccountsPage() {
                   <><Link2 className="h-4 w-4 mr-2" /> Vincular automaticamente</>
                 )}
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={syncFollowers}
+                disabled={syncingFollowers}
+                title="Le followers de cada conta abrindo o perfil sequencialmente. Lento."
+              >
+                {syncingFollowers ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Sincronizando...</>
+                ) : (
+                  <><RefreshCw className="h-4 w-4 mr-2" /> Sincronizar seguidores</>
+                )}
+              </Button>
               {selected.size > 0 && (
                 <Button
                   size="sm"
@@ -582,6 +624,7 @@ export default function AccountsPage() {
                 <TableHead>Campanha</TableHead>
                 <TableHead>Perfil AdsPower</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Seguidores</TableHead>
                 <TableHead>Progresso hoje</TableHead>
                 <TableHead>Ciclo</TableHead>
                 <TableHead>Falhas</TableHead>
@@ -623,6 +666,18 @@ export default function AccountsPage() {
                   <TableCell>{a.adsPowerProfile?.name ?? '—'}</TableCell>
                   <TableCell>
                     <Badge variant={STATUS_VARIANT[a.status] ?? 'secondary'}>{a.status}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    {a.followersCount !== null && a.followersCount !== undefined ? (
+                      <span
+                        className="text-sm"
+                        title={a.followersUpdatedAt ? `atualizado em ${new Date(a.followersUpdatedAt).toLocaleString('pt-BR')}` : ''}
+                      >
+                        {formatFollowers(a.followersCount)}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     {(() => {
@@ -735,4 +790,13 @@ export default function AccountsPage() {
       </Card>
     </div>
   );
+}
+
+// FIX 21: formata contador de seguidores em forma curta (ex: 1.2K, 3.5M).
+function formatFollowers(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  if (n < 1_000_000) return Math.round(n / 1000) + 'K';
+  if (n < 10_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  return Math.round(n / 1_000_000) + 'M';
 }

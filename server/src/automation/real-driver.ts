@@ -101,6 +101,70 @@ async function getLatestPostUrl(page: Page, igUsername: string): Promise<string 
 }
 
 /**
+ * FIX 21: navega pro perfil IG e extrai contador de seguidores.
+ * Usa 2 estrategias:
+ *   1. meta og:description (mais estavel, IG sempre serve com SSR)
+ *      ex: "1.2K Followers, 200 Following, 50 Posts - @user on Instagram..."
+ *   2. <span> no header de stats (fallback, se og missing)
+ *
+ * Retorna null se nao conseguir extrair (perfil privado, conta suspensa,
+ * redirect pra login, etc).
+ */
+async function getProfileStats(page: Page, igUsername: string): Promise<{ followersCount: number | null }> {
+  try {
+    await page.goto(`https://www.instagram.com/${igUsername}/`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 20_000,
+    });
+    await humanDelay(1500, 2500);
+    const followersCount = await page.evaluate(() => {
+      function parseCount(raw: string): number | null {
+        const s = raw.trim().replace(/\s/g, '').toLowerCase();
+        const m = s.match(/^([\d.,]+)([kmb]?)$/);
+        if (!m) return null;
+        // PT-BR usa "." como milhar e "," como decimal. EN usa o oposto.
+        // Heuristica: se tem K/M/B, eh formato curto onde o "." eh decimal
+        // (ex: "1.2K"). Se nao, "." eh milhar (ex: "1.234.567").
+        const numStr = m[2]
+          ? m[1].replace(/,/g, '.')
+          : m[1].replace(/[.,]/g, '');
+        const num = parseFloat(numStr);
+        if (isNaN(num)) return null;
+        const mult = m[2] === 'k' ? 1000 : m[2] === 'm' ? 1_000_000 : m[2] === 'b' ? 1_000_000_000 : 1;
+        return Math.round(num * mult);
+      }
+
+      // Estrategia 1: meta og:description
+      const meta = document.querySelector('meta[property="og:description"]');
+      if (meta) {
+        const content = meta.getAttribute('content') || '';
+        const match = content.match(/([\d.,KMB]+)\s*(?:Followers|Seguidores|Folgende)/i);
+        if (match) {
+          const n = parseCount(match[1]);
+          if (n !== null) return n;
+        }
+      }
+      // Estrategia 2: span no header
+      const spans = Array.from(document.querySelectorAll('header span, header li, header a'));
+      for (const s of spans) {
+        const txt = (s.textContent || '');
+        if (/seguidor|follower|folgende/i.test(txt)) {
+          const numMatch = txt.match(/([\d.,]+\s*[KMBkmb]?)/);
+          if (numMatch) {
+            const n = parseCount(numMatch[1]);
+            if (n !== null) return n;
+          }
+        }
+      }
+      return null;
+    }).catch(() => null);
+    return { followersCount };
+  } catch {
+    return { followersCount: null };
+  }
+}
+
+/**
  * Detecta se a pagina atual eh um checkpoint/CAPTCHA do Instagram.
  * Verifica:
  *   1. URL contem /challenge/, /auth_platform/, /accounts/suspended/
@@ -2027,5 +2091,18 @@ export const realDriver: AutomationDriver = {
 
   getOpenSessionIds(): string[] {
     return Array.from(sessions.keys());
+  },
+
+  // FIX 21: pega followers count do perfil IG vinculado a esse adsPowerId.
+  // Reusa a sessao Playwright atual (assume bot ja esta logado) — chamar
+  // depois de ensureLoggedIn pra garantir.
+  async getFollowers(adsPowerId: string, igUsername: string): Promise<number | null> {
+    try {
+      const page = await getPage(adsPowerId);
+      const stats = await getProfileStats(page, igUsername);
+      return stats.followersCount;
+    } catch {
+      return null;
+    }
   },
 };

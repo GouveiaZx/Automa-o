@@ -88,6 +88,23 @@ export async function processJob(jobId: string): Promise<void> {
             igUsername: job.account.username,
           });
 
+    // FIX 21: se post deu certo, captura followers count ANTES de fechar
+    // o profile (sessao ainda aberta + ja logado). Custo ~3-5s extra no
+    // sucesso. Falha aqui nao quebra o flow — eh best-effort.
+    if (result.ok && driver.getFollowers) {
+      try {
+        const count = await driver.getFollowers(adsId, job.account.username);
+        if (count !== null) {
+          await prisma.instagramAccount.update({
+            where: { id: job.accountId },
+            data: { followersCount: count, followersUpdatedAt: new Date() },
+          });
+        }
+      } catch {
+        /* best-effort — nao quebra o flow */
+      }
+    }
+
     // Story usa mobile UA spoof via initScript que CONTAMINA o contexto.
     // Forca closeProfile depois de story mesmo com KEEP_PROFILES_OPEN=true,
     // pra proximo job (feed/reel) abrir contexto fresh sem o spoof grudado.

@@ -250,6 +250,57 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     };
   });
 
+  // Sync followers (FIX 21): itera sobre contas IG com perfil AdsPower
+  // vinculado, abre cada perfil sequencialmente, le followers count, fecha.
+  // Lento (1 conta por vez), mas roda em background — UI mostra spinner.
+  app.post('/accounts/sync-followers', async () => {
+    const accounts = await prisma.instagramAccount.findMany({
+      where: { adsPowerProfileId: { not: null } },
+      include: { adsPowerProfile: true },
+      orderBy: { username: 'asc' },
+    });
+
+    const driver = getDriver();
+    let updated = 0;
+    const failed: string[] = [];
+
+    for (const acc of accounts) {
+      const adsId = acc.adsPowerProfile?.adsPowerId;
+      if (!adsId) continue;
+      try {
+        const opened = await driver.openProfile(adsId);
+        if (!opened.ok) {
+          failed.push(`@${acc.username}: ${opened.reason ?? 'open falhou'}`);
+          continue;
+        }
+        const logged = await driver.ensureLoggedIn(adsId, acc.username);
+        if (!logged) {
+          failed.push(`@${acc.username}: nao logado`);
+          await driver.closeProfile(adsId).catch(() => undefined);
+          continue;
+        }
+        const count = driver.getFollowers
+          ? await driver.getFollowers(adsId, acc.username).catch(() => null)
+          : null;
+        await driver.closeProfile(adsId).catch(() => undefined);
+        if (count !== null) {
+          await prisma.instagramAccount.update({
+            where: { id: acc.id },
+            data: { followersCount: count, followersUpdatedAt: new Date() },
+          });
+          updated++;
+        } else {
+          failed.push(`@${acc.username}: nao conseguiu ler followers`);
+        }
+      } catch (err) {
+        failed.push(`@${acc.username}: ${err instanceof Error ? err.message : 'erro'}`);
+        await driver.closeProfile(adsId).catch(() => undefined);
+      }
+    }
+
+    return { ok: true, total: accounts.length, updated, failedCount: failed.length, failed: failed.slice(0, 20) };
+  });
+
   // Auto-create from AdsPower profiles (FIX 20): pra cada perfil AdsPower
   // SEM conta IG vinculada, cria uma conta IG nova com username = nome do
   // perfil (lowercase), vinculando o adsPowerProfileId. Aceita campanha e
@@ -429,6 +480,8 @@ function serializeAccount(a: {
   lastFailureAt: Date | null;
   consecutiveFails: number;
   autoPaused: boolean;
+  followersCount: number | null;
+  followersUpdatedAt: Date | null;
   campaignId: string | null;
   adsPowerProfileId: string | null;
 }) {
@@ -443,6 +496,8 @@ function serializeAccount(a: {
     lastFailureAt: a.lastFailureAt ? a.lastFailureAt.toISOString() : null,
     consecutiveFails: a.consecutiveFails,
     autoPaused: a.autoPaused,
+    followersCount: a.followersCount,
+    followersUpdatedAt: a.followersUpdatedAt ? a.followersUpdatedAt.toISOString() : null,
     campaignId: a.campaignId,
     adsPowerProfileId: a.adsPowerProfileId,
   };

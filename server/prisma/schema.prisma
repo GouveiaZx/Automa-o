@@ -61,6 +61,10 @@ model InstagramAccount {
   // manual (user via UI). auto-unpause no poller so re-ativa as auto-pausadas
   // — respeita intencao do user de manter "paused manual".
   autoPaused        Boolean          @default(false)
+  // FIX 21: contador de seguidores capturado quando bot loga/posta na conta.
+  // followersUpdatedAt = timestamp da ultima leitura, pra UI mostrar "ha N min/h".
+  followersCount     Int?
+  followersUpdatedAt DateTime?
   campaignId        String?
   campaign          Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   adsPowerProfileId String?          @unique
