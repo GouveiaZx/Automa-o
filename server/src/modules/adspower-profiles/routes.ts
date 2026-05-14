@@ -85,7 +85,16 @@ export async function adsPowerProfileRoutes(app: FastifyInstance) {
   //
   // Throttle: AdsPower API tem 1 req/s, ja serializado pelo client.
   // Page size 100, safety limit de 50 paginas (5000 perfis max).
-  app.post('/adspower-profiles/sync', async (_req, reply) => {
+  app.post('/adspower-profiles/sync', async (req, reply) => {
+    // FIX 22: aceita { deleteMissing: boolean } no body. Se true, ao final
+    // do sync deleta perfis que estao no DB mas NAO estao no AdsPower atual.
+    // Default false (defensivo — evita deletar se AdsPower retornar lista
+    // parcial por bug temporario).
+    const parsed = z.object({
+      deleteMissing: z.boolean().optional().default(false),
+    }).safeParse(req.body ?? {});
+    const deleteMissing = parsed.success ? parsed.data.deleteMissing : false;
+
     const pageSize = 100;
     const SAFETY_LIMIT = 50;
     let page = 1;
@@ -93,6 +102,7 @@ export async function adsPowerProfileRoutes(app: FastifyInstance) {
     let created = 0;
     let updated = 0;
     let skipped = 0;
+    const fetchedAdsPowerIds = new Set<string>();
     try {
       while (page <= SAFETY_LIMIT) {
         const profiles = await adsPowerClient.listProfiles(page, pageSize);
@@ -103,6 +113,7 @@ export async function adsPowerProfileRoutes(app: FastifyInstance) {
             skipped++;
             continue;
           }
+          fetchedAdsPowerIds.add(p.user_id);
           // FIX 20: normaliza country pra uppercase 2 letras (BR, US, etc)
           const countryRaw = (p.country ?? p.ip_country ?? '').trim().toUpperCase();
           const country = countryRaw || null;
@@ -129,7 +140,34 @@ export async function adsPowerProfileRoutes(app: FastifyInstance) {
         if (profiles.length < pageSize) break;
         page++;
       }
-      return { ok: true, fetched: totalFetched, created, updated, skipped };
+
+      // FIX 22: detecta perfis no DB que sumiram do AdsPower
+      const allDbProfiles = await prisma.adsPowerProfile.findMany({
+        select: { id: true, adsPowerId: true, name: true, account: { select: { username: true } } },
+      });
+      const missingProfiles = allDbProfiles.filter((p) => !fetchedAdsPowerIds.has(p.adsPowerId));
+      const missingNames = missingProfiles.map((p) =>
+        p.account ? `${p.name} (vinculado a @${p.account.username})` : p.name
+      );
+
+      let deleted = 0;
+      if (deleteMissing && missingProfiles.length > 0) {
+        const result = await prisma.adsPowerProfile.deleteMany({
+          where: { id: { in: missingProfiles.map((p) => p.id) } },
+        });
+        deleted = result.count;
+      }
+
+      return {
+        ok: true,
+        fetched: totalFetched,
+        created,
+        updated,
+        skipped,
+        missingCount: missingProfiles.length,
+        missingNames: missingNames.slice(0, 20),
+        deleted,
+      };
     } catch (err) {
       if (err instanceof AdsPowerError) {
         return reply.status(502).send({ ok: false, error: 'adspower_api', reason: err.message });

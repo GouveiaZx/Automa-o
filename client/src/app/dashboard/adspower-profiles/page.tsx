@@ -71,17 +71,43 @@ export default function AdsPowerProfilesPage() {
     if (syncing) return;
     setSyncing(true);
     try {
-      const r = await api<{ ok: boolean; fetched: number; created: number; updated: number; skipped: number }>(
-        '/api/adspower-profiles/sync',
-        { method: 'POST' }
-      );
+      // Etapa 1: sync sem deletar (deteta missing pra reportar pro user)
+      const r = await api<{
+        ok: boolean;
+        fetched: number;
+        created: number;
+        updated: number;
+        skipped: number;
+        missingCount: number;
+        missingNames: string[];
+        deleted: number;
+      }>('/api/adspower-profiles/sync', { method: 'POST', body: { deleteMissing: false } });
+
       const parts = [
         `${r.fetched} perfis lidos do AdsPower`,
         `${r.created} novos criados`,
         `${r.updated} atualizados`,
       ];
       if (r.skipped > 0) parts.push(`${r.skipped} ignorados (sem id ou nome)`);
-      alert(parts.join('\n'));
+
+      // FIX 22: se ha perfis no DB que sumiram do AdsPower, oferece deletar
+      if (r.missingCount > 0) {
+        parts.push('');
+        parts.push(`AVISO: ${r.missingCount} perfil(is) no painel NAO existem mais no AdsPower:`);
+        parts.push(...r.missingNames);
+        parts.push('');
+        parts.push('Quer DELETAR esses perfis do painel agora?');
+        parts.push('(Contas IG vinculadas viram orfas — adsPowerProfileId = null)');
+        if (confirm(parts.join('\n'))) {
+          const r2 = await api<{ ok: boolean; deleted: number }>(
+            '/api/adspower-profiles/sync',
+            { method: 'POST', body: { deleteMissing: true } }
+          );
+          alert(`${r2.deleted} perfil(is) deletado(s).`);
+        }
+      } else {
+        alert(parts.join('\n'));
+      }
       load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'erro';
