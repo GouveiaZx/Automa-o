@@ -212,6 +212,7 @@ export default function AdsPowerProfilesPage() {
                 </TableHead>
                 <TableHead>Nome</TableHead>
                 <TableHead>AdsPower ID</TableHead>
+                <TableHead>País</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Conta vinculada</TableHead>
                 <TableHead></TableHead>
@@ -230,6 +231,7 @@ export default function AdsPowerProfilesPage() {
                   </TableCell>
                   <TableCell className="font-medium">{p.name}</TableCell>
                   <TableCell className="font-mono text-xs">{p.adsPowerId}</TableCell>
+                  <TableCell className="text-xs">{p.country ?? '—'}</TableCell>
                   <TableCell>
                     <Badge variant={p.status === 'idle' ? 'secondary' : p.status === 'running' ? 'info' : 'destructive'}>
                       {p.status}
@@ -245,7 +247,7 @@ export default function AdsPowerProfilesPage() {
               ))}
               {!items.length && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
                     Nenhum perfil cadastrado.
                   </TableCell>
                 </TableRow>

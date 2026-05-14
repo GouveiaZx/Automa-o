@@ -250,6 +250,83 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     };
   });
 
+  // Auto-create from AdsPower profiles (FIX 20): pra cada perfil AdsPower
+  // SEM conta IG vinculada, cria uma conta IG nova com username = nome do
+  // perfil (lowercase), vinculando o adsPowerProfileId. Aceita campanha e
+  // grupo padrao opcionais (user pode editar conta-por-conta depois).
+  // Reduz copy/paste manual quando user importou 20+ perfis (FIX 17) e
+  // precisa criar contas IG correspondentes.
+  app.post('/accounts/auto-create-from-profiles', async (req, reply) => {
+    const parsed = z.object({
+      campaignId: z.string().optional().nullable(),
+      groupName: z.string().optional().nullable(),
+    }).safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'invalid_body', details: parsed.error.flatten() });
+    }
+    const defaults = parsed.data;
+
+    const orphanProfiles = await prisma.adsPowerProfile.findMany({
+      where: { account: { is: null } },
+    });
+
+    let created = 0;
+    let linkedExisting = 0;
+    const skipped: string[] = [];
+
+    for (const p of orphanProfiles) {
+      const usernameRaw = p.name.trim().toLowerCase();
+      if (!usernameRaw) {
+        skipped.push(`${p.adsPowerId}: nome do perfil vazio`);
+        continue;
+      }
+      const existing = await prisma.instagramAccount.findUnique({
+        where: { username: usernameRaw },
+      });
+      if (existing) {
+        // Conta ja existe — vincula se ainda esta sem perfil (idempotente)
+        if (!existing.adsPowerProfileId) {
+          try {
+            await prisma.instagramAccount.update({
+              where: { id: existing.id },
+              data: { adsPowerProfileId: p.id },
+            });
+            linkedExisting++;
+          } catch {
+            skipped.push(`@${usernameRaw}: erro ao vincular conta existente`);
+          }
+        } else {
+          skipped.push(`@${usernameRaw}: ja existia (vinculada a outro perfil)`);
+        }
+        continue;
+      }
+      try {
+        await prisma.instagramAccount.create({
+          data: {
+            username: usernameRaw,
+            campaignId: defaults.campaignId ?? null,
+            groupName: defaults.groupName ?? null,
+            adsPowerProfileId: p.id,
+          },
+        });
+        created++;
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        skipped.push(
+          `@${usernameRaw}: ${code === 'P2002' ? 'conflito unique' : 'erro ao criar'}`
+        );
+      }
+    }
+
+    return {
+      ok: true,
+      created,
+      linkedExisting,
+      skippedCount: skipped.length,
+      skipped: skipped.slice(0, 20),
+    };
+  });
+
   // Bulk delete (FIX 14): exclui N contas IG de uma vez. Usa deleteMany numa
   // transacao implicita do Prisma — atomico. Jobs/media relacionados sao
   // tratados pelas FKs do schema (cascade onde definido).

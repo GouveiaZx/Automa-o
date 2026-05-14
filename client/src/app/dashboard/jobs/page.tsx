@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
-import type { InstagramAccount, MediaItem, PostJob } from '@automacao/shared';
+import type { Campaign, InstagramAccount, MediaItem, PostJob } from '@automacao/shared';
 import { connectSse } from '@/lib/sse';
 import { formatDateTime } from '@/lib/utils';
 import { Plus, RotateCcw, Trash2, Layers } from 'lucide-react';
@@ -29,6 +29,7 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState<JobWithRefs[]>([]);
   const [accounts, setAccounts] = useState<InstagramAccount[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [accountId, setAccountId] = useState('');
   const [mediaId, setMediaId] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -40,17 +41,22 @@ export default function JobsPage() {
   const [bulkSpread, setBulkSpread] = useState<'now' | 'hour' | 'today' | '24h' | 'campaign'>('today');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkFilterGroup, setBulkFilterGroup] = useState<string>('');
+  // FIX 20: filtro de campanha em "Agendar lote" pra acelerar selecao quando
+  // user tem ~25 contas distribuidas em varias campanhas.
+  const [bulkFilterCampaignId, setBulkFilterCampaignId] = useState<string>('');
   const [bulkFilterTag, setBulkFilterTag] = useState<string>('');
 
   async function load() {
-    const [j, a, m] = await Promise.all([
+    const [j, a, m, c] = await Promise.all([
       api<JobWithRefs[]>('/api/jobs?limit=200'),
       api<InstagramAccount[]>('/api/accounts'),
       api<MediaItem[]>('/api/media'),
+      api<Campaign[]>('/api/campaigns'),
     ]);
     setJobs(j);
     setAccounts(a);
     setMedia(m);
+    setCampaigns(c);
   }
 
   useEffect(() => {
@@ -166,7 +172,7 @@ export default function JobsPage() {
             <div className="space-y-1">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <Label>Contas ({bulkAccountIds.length} selecionada{bulkAccountIds.length !== 1 ? 's' : ''})</Label>
-                <div className="flex gap-2 items-center">
+                <div className="flex gap-2 items-center flex-wrap">
                   <select
                     className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
                     value={bulkFilterGroup}
@@ -179,13 +185,28 @@ export default function JobsPage() {
                         <option key={g} value={g}>{g}</option>
                       ))}
                   </select>
+                  <select
+                    className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                    value={bulkFilterCampaignId}
+                    onChange={(e) => setBulkFilterCampaignId(e.target.value)}
+                  >
+                    <option value="">Todas as campanhas</option>
+                    {campaigns
+                      .slice()
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                  </select>
                   <button
                     type="button"
                     className="text-xs text-primary hover:underline"
                     onClick={() => {
-                      const filtered = bulkFilterGroup
-                        ? accounts.filter((a) => a.groupName === bulkFilterGroup)
-                        : accounts;
+                      const filtered = accounts.filter(
+                        (a) =>
+                          (!bulkFilterGroup || a.groupName === bulkFilterGroup) &&
+                          (!bulkFilterCampaignId || a.campaignId === bulkFilterCampaignId)
+                      );
                       const allIds = filtered.map((a) => a.id);
                       const allSelected = allIds.every((id) => bulkAccountIds.includes(id));
                       if (allSelected) {
@@ -200,7 +221,13 @@ export default function JobsPage() {
                 </div>
               </div>
               <div className="border rounded-md max-h-48 overflow-auto">
-                {(bulkFilterGroup ? accounts.filter((a) => a.groupName === bulkFilterGroup) : accounts).map((a) => {
+                {accounts
+                  .filter(
+                    (a) =>
+                      (!bulkFilterGroup || a.groupName === bulkFilterGroup) &&
+                      (!bulkFilterCampaignId || a.campaignId === bulkFilterCampaignId)
+                  )
+                  .map((a) => {
                   const checked = bulkAccountIds.includes(a.id);
                   return (
                     <label

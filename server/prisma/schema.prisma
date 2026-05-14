@@ -40,6 +40,9 @@ model AdsPowerProfile {
   notes        String?
   status       String            @default("idle")
   lastOpenedAt DateTime?
+  // FIX 20: pais detectado pelo AdsPower (BR, US, etc) — populado pelo sync.
+  // Usado pra filtrar contas IG por localizacao no painel.
+  country      String?
   account      InstagramAccount?
 }
 

@@ -103,20 +103,25 @@ export async function adsPowerProfileRoutes(app: FastifyInstance) {
             skipped++;
             continue;
           }
+          // FIX 20: normaliza country pra uppercase 2 letras (BR, US, etc)
+          const countryRaw = (p.country ?? p.ip_country ?? '').trim().toUpperCase();
+          const country = countryRaw || null;
           const existing = await prisma.adsPowerProfile.findUnique({
             where: { adsPowerId: p.user_id },
           });
           if (existing) {
-            if (existing.name !== p.name) {
+            const nameChanged = existing.name !== p.name;
+            const countryChanged = existing.country !== country;
+            if (nameChanged || countryChanged) {
               await prisma.adsPowerProfile.update({
                 where: { adsPowerId: p.user_id },
-                data: { name: p.name },
+                data: { name: p.name, country },
               });
               updated++;
             }
           } else {
             await prisma.adsPowerProfile.create({
-              data: { adsPowerId: p.user_id, name: p.name },
+              data: { adsPowerId: p.user_id, name: p.name, country },
             });
             created++;
           }

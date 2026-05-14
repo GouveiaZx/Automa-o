@@ -28,6 +28,8 @@ export interface AdsPowerProfile {
   notes: string | null;
   status: ProfileStatus;
   lastOpenedAt: string | null;
+  // FIX 20: pais detectado pelo AdsPower (BR, US, etc) — populado no sync.
+  country: string | null;
   account?: InstagramAccount | null;
 }
 

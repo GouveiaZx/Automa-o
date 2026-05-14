@@ -48,6 +48,8 @@ export default function AccountsPage() {
   const [profiles, setProfiles] = useState<AdsPowerProfile[]>([]);
   const [form, setForm] = useState({ username: '', displayName: '', bio: '', groupName: '', campaignId: '', adsPowerProfileId: '' });
   const [filterGroup, setFilterGroup] = useState<string>('');
+  // FIX 20: filtro por pais (vindo do AdsPower profile vinculado)
+  const [filterCountry, setFilterCountry] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [validatingId, setValidatingId] = useState<string | null>(null);
@@ -134,6 +136,51 @@ export default function AccountsPage() {
 
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [autoLinking, setAutoLinking] = useState(false);
+  const [autoCreating, setAutoCreating] = useState(false);
+
+  async function autoCreateFromProfiles() {
+    if (autoCreating) return;
+    const defaultCampaignId = prompt(
+      'Campanha padrao pras contas novas (id ou vazio pra deixar sem campanha):',
+      ''
+    );
+    if (defaultCampaignId === null) return; // cancelou
+    const defaultGroupName = prompt(
+      'Grupo padrao pras contas novas (texto livre ou vazio):',
+      ''
+    );
+    if (defaultGroupName === null) return;
+    setAutoCreating(true);
+    try {
+      const r = await api<{
+        ok: boolean;
+        created: number;
+        linkedExisting: number;
+        skippedCount: number;
+        skipped: string[];
+      }>('/api/accounts/auto-create-from-profiles', {
+        method: 'POST',
+        body: {
+          campaignId: defaultCampaignId.trim() || null,
+          groupName: defaultGroupName.trim() || null,
+        },
+      });
+      const lines = [
+        `${r.created} conta(s) IG criada(s)`,
+        `${r.linkedExisting} conta(s) ja existentes vinculadas a perfis`,
+      ];
+      if (r.skippedCount > 0) {
+        lines.push(`${r.skippedCount} pulada(s):`);
+        lines.push(...r.skipped);
+      }
+      alert(lines.join('\n'));
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao criar contas');
+    } finally {
+      setAutoCreating(false);
+    }
+  }
 
   async function autoLinkProfiles() {
     if (autoLinking) return;
@@ -421,6 +468,42 @@ export default function AccountsPage() {
                     </option>
                   ))}
               </select>
+              <select
+                className="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={filterCountry}
+                onChange={(e) => {
+                  setFilterCountry(e.target.value);
+                  setSelected(new Set());
+                }}
+              >
+                <option value="">Todos os paises</option>
+                {Array.from(
+                  new Set(
+                    items
+                      .map((i) => i.adsPowerProfile?.country)
+                      .filter(Boolean) as string[]
+                  )
+                )
+                  .sort()
+                  .map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+              </select>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={autoCreateFromProfiles}
+                disabled={autoCreating}
+                title="Pra cada perfil AdsPower SEM conta IG, cria uma nova conta com username = nome do perfil"
+              >
+                {autoCreating ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Criando...</>
+                ) : (
+                  <><Plus className="h-4 w-4 mr-2" /> Criar contas dos perfis</>
+                )}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -506,7 +589,13 @@ export default function AccountsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(filterGroup ? items.filter((a) => a.groupName === filterGroup) : items).map((a) => (
+              {items
+                .filter(
+                  (a) =>
+                    (!filterGroup || a.groupName === filterGroup) &&
+                    (!filterCountry || a.adsPowerProfile?.country === filterCountry)
+                )
+                .map((a) => (
                 <TableRow key={a.id} data-state={selected.has(a.id) ? 'selected' : undefined}>
                   <TableCell>
                     <input

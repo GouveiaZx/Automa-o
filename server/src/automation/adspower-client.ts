@@ -17,6 +17,10 @@ interface ProfileData {
   name: string;
   group_name?: string;
   remark?: string;
+  // FIX 20: AdsPower retorna country/ip_country dependendo da versao.
+  // Capturamos ambos pra cobrir variacoes da API.
+  country?: string;
+  ip_country?: string;
 }
 
 interface ProfileListData {
