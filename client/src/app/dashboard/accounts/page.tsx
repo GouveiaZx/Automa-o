@@ -137,6 +137,11 @@ export default function AccountsPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [autoLinking, setAutoLinking] = useState(false);
   const [autoCreating, setAutoCreating] = useState(false);
+  // FIX 22.1: modal inline pra "Criar contas dos perfis" (substitui prompts feios
+  // que pediam id de campanha — user colava nome e dava "erro ao criar" generico)
+  const [autoCreateOpen, setAutoCreateOpen] = useState(false);
+  const [autoCreateCampaignId, setAutoCreateCampaignId] = useState<string>('');
+  const [autoCreateGroupName, setAutoCreateGroupName] = useState<string>('');
   const [syncingFollowers, setSyncingFollowers] = useState(false);
 
   async function syncFollowers() {
@@ -167,18 +172,18 @@ export default function AccountsPage() {
     }
   }
 
+  // Botao "Criar contas dos perfis" agora abre o modal inline em vez de
+  // disparar 2 prompts de browser. Modal tem select real de campanha,
+  // input de grupo, e botao Criar.
+  function openAutoCreate() {
+    if (autoCreating) return;
+    setAutoCreateCampaignId('');
+    setAutoCreateGroupName('');
+    setAutoCreateOpen(true);
+  }
+
   async function autoCreateFromProfiles() {
     if (autoCreating) return;
-    const defaultCampaignId = prompt(
-      'Campanha padrao pras contas novas (id ou vazio pra deixar sem campanha):',
-      ''
-    );
-    if (defaultCampaignId === null) return; // cancelou
-    const defaultGroupName = prompt(
-      'Grupo padrao pras contas novas (texto livre ou vazio):',
-      ''
-    );
-    if (defaultGroupName === null) return;
     setAutoCreating(true);
     try {
       const r = await api<{
@@ -190,8 +195,8 @@ export default function AccountsPage() {
       }>('/api/accounts/auto-create-from-profiles', {
         method: 'POST',
         body: {
-          campaignId: defaultCampaignId.trim() || null,
-          groupName: defaultGroupName.trim() || null,
+          campaignId: autoCreateCampaignId || null,
+          groupName: autoCreateGroupName.trim() || null,
         },
       });
       const lines = [
@@ -203,6 +208,7 @@ export default function AccountsPage() {
         lines.push(...r.skipped);
       }
       alert(lines.join('\n'));
+      setAutoCreateOpen(false);
       load();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'erro ao criar contas');
@@ -393,6 +399,71 @@ export default function AccountsPage() {
         </p>
       </header>
 
+      {autoCreateOpen && (
+        <Card className="border-primary/40">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Plus className="h-4 w-4" /> Criar contas dos perfis AdsPower
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              Pra cada perfil AdsPower SEM conta IG vinculada, cria 1 conta IG nova com username =
+              nome do perfil. Defina (opcional) campanha e grupo padrao pras novas contas.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <Label>Campanha padrao (opcional)</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                  value={autoCreateCampaignId}
+                  onChange={(e) => setAutoCreateCampaignId(e.target.value)}
+                  disabled={autoCreating}
+                >
+                  <option value="">— sem campanha —</option>
+                  {campaigns
+                    .slice()
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label>Grupo padrao (opcional)</Label>
+                <Input
+                  placeholder="ex: GARI, MANU"
+                  value={autoCreateGroupName}
+                  onChange={(e) => setAutoCreateGroupName(e.target.value)}
+                  disabled={autoCreating}
+                />
+              </div>
+              <div className="md:col-span-2 flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAutoCreateOpen(false)}
+                  disabled={autoCreating}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  onClick={autoCreateFromProfiles}
+                  disabled={autoCreating}
+                >
+                  {autoCreating ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Criando...</>
+                  ) : (
+                    <><Plus className="h-4 w-4 mr-2" /> Criar contas</>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -523,7 +594,7 @@ export default function AccountsPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={autoCreateFromProfiles}
+                onClick={openAutoCreate}
                 disabled={autoCreating}
                 title="Pra cada perfil AdsPower SEM conta IG, cria uma nova conta com username = nome do perfil"
               >

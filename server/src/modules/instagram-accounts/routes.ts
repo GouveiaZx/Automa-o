@@ -317,6 +317,18 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     }
     const defaults = parsed.data;
 
+    // FIX 22.1: valida campaignId existe ANTES de iterar — evita 25 erros
+    // identicos de FK violation se user passou id invalido.
+    if (defaults.campaignId) {
+      const exists = await prisma.campaign.findUnique({ where: { id: defaults.campaignId } });
+      if (!exists) {
+        return reply.status(400).send({
+          error: 'campaign_not_found',
+          message: `Campanha id=${defaults.campaignId} nao existe`,
+        });
+      }
+    }
+
     const orphanProfiles = await prisma.adsPowerProfile.findMany({
       where: { account: { is: null } },
     });
@@ -362,10 +374,23 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
         });
         created++;
       } catch (err: unknown) {
+        // FIX 22.1: inclui codigo real do Prisma + mensagem pra debug.
+        // Antes era so "erro ao criar" generico que ofuscava P2003 (FK
+        // violation pra campaignId invalido), constraint violations, etc.
         const code = (err as { code?: string }).code;
-        skipped.push(
-          `@${usernameRaw}: ${code === 'P2002' ? 'conflito unique' : 'erro ao criar'}`
-        );
+        const meta = (err as { meta?: { field_name?: string; target?: string[] } }).meta;
+        const msg = err instanceof Error ? err.message : 'unknown';
+        let label: string;
+        if (code === 'P2002') {
+          label = `conflito unique (${meta?.target?.join(',') ?? '?'})`;
+        } else if (code === 'P2003') {
+          label = `FK violation (${meta?.field_name ?? '?'})`;
+        } else if (code) {
+          label = `${code}: ${msg.slice(0, 80)}`;
+        } else {
+          label = `erro: ${msg.slice(0, 80)}`;
+        }
+        skipped.push(`@${usernameRaw}: ${label}`);
       }
     }
 
