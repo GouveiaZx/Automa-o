@@ -45,18 +45,23 @@ export default function JobsPage() {
   // user tem ~25 contas distribuidas em varias campanhas.
   const [bulkFilterCampaignId, setBulkFilterCampaignId] = useState<string>('');
   const [bulkFilterTag, setBulkFilterTag] = useState<string>('');
+  // FIX 24.1: indicador de "tem jobs hoje?" na lista de Agendar lote.
+  // accounts/progress retorna { [accountId]: { today: { done }, totalToday, cycleState } }
+  const [progress, setProgress] = useState<Record<string, { today: { done: number }; totalToday: number; cycleState: string }>>({});
 
   async function load() {
-    const [j, a, m, c] = await Promise.all([
+    const [j, a, m, c, p] = await Promise.all([
       api<JobWithRefs[]>('/api/jobs?limit=200'),
       api<InstagramAccount[]>('/api/accounts'),
       api<MediaItem[]>('/api/media'),
       api<Campaign[]>('/api/campaigns'),
+      api<Record<string, { today: { done: number }; totalToday: number; cycleState: string }>>('/api/accounts/progress').catch(() => ({})),
     ]);
     setJobs(j);
     setAccounts(a);
     setMedia(m);
     setCampaigns(c);
+    setProgress(p);
   }
 
   useEffect(() => {
@@ -229,6 +234,16 @@ export default function JobsPage() {
                   )
                   .map((a) => {
                   const checked = bulkAccountIds.includes(a.id);
+                  // FIX 24.1: badge com status de jobs hoje (rodando/concluido/sem jobs)
+                  const p = progress[a.id];
+                  let jobBadge: React.ReactNode = null;
+                  if (!p || p.totalToday === 0) {
+                    jobBadge = <Badge variant="secondary" className="text-xs">sem jobs</Badge>;
+                  } else if (p.cycleState === 'concluido') {
+                    jobBadge = <Badge variant="success" className="text-xs">concluido {p.today.done}/{p.totalToday}</Badge>;
+                  } else {
+                    jobBadge = <Badge variant="info" className="text-xs">rodando {p.today.done}/{p.totalToday}</Badge>;
+                  }
                   return (
                     <label
                       key={a.id}
@@ -246,6 +261,7 @@ export default function JobsPage() {
                       <span className="text-muted-foreground text-xs flex-1 truncate">
                         {a.campaign?.name ?? 'sem campanha'}
                       </span>
+                      {jobBadge}
                     </label>
                   );
                 })}

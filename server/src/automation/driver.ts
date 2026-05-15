@@ -27,8 +27,12 @@ export interface AutomationDriver {
   closeProfile(adsPowerId: string): Promise<void>;
   /** IDs de perfis AdsPower com sessao Playwright atualmente aberta. */
   getOpenSessionIds?(): string[];
-  /** FIX 21: pega contador de seguidores navegando pro perfil IG. */
-  getFollowers?(adsPowerId: string, igUsername: string): Promise<number | null>;
+  /**
+   * FIX 21 + FIX 24.3: pega contador de seguidores navegando pro perfil IG.
+   * Retorna `reason` quando falha (pra debug/log na UI: "redirect:...",
+   * "parse_failed:source=none preview=...", etc).
+   */
+  getFollowers?(adsPowerId: string, igUsername: string): Promise<{ followersCount: number | null; reason?: string }>;
 }
 
 import { mockDriver } from './mock-driver.js';

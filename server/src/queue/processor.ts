@@ -93,12 +93,20 @@ export async function processJob(jobId: string): Promise<void> {
     // sucesso. Falha aqui nao quebra o flow — eh best-effort.
     if (result.ok && driver.getFollowers) {
       try {
-        const count = await driver.getFollowers(adsId, job.account.username);
-        if (count !== null) {
+        const stats = await driver.getFollowers(adsId, job.account.username);
+        if (stats.followersCount !== null) {
           await prisma.instagramAccount.update({
             where: { id: job.accountId },
-            data: { followersCount: count, followersUpdatedAt: new Date() },
+            data: { followersCount: stats.followersCount, followersUpdatedAt: new Date() },
           });
+        } else if (stats.reason) {
+          // FIX 24.3: log motivo da falha (em vez de silenciar)
+          await appLog({
+            source: 'worker',
+            level: 'warn',
+            message: `[get-followers-failed] @${job.account.username}: ${stats.reason}`,
+            accountId: job.accountId,
+          }).catch(() => undefined);
         }
       } catch {
         /* best-effort — nao quebra o flow */

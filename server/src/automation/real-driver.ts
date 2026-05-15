@@ -101,50 +101,94 @@ async function getLatestPostUrl(page: Page, igUsername: string): Promise<string 
 }
 
 /**
- * FIX 21: navega pro perfil IG e extrai contador de seguidores.
- * Usa 2 estrategias:
- *   1. meta og:description (mais estavel, IG sempre serve com SSR)
- *      ex: "1.2K Followers, 200 Following, 50 Posts - @user on Instagram..."
- *   2. <span> no header de stats (fallback, se og missing)
+ * FIX 21 + FIX 24.3: navega pro perfil IG e extrai contador de seguidores.
+ * Usa 3 estrategias em ordem de preferencia:
+ *   A. <a href="/u/followers/" title="N">       — numero EXATO no atributo title
+ *      do link de followers (acessibilidade). Funciona quando user esta logado.
+ *   B. <span title="N"> dentro do link de followers — fallback.
+ *   C. meta og:description                       — pra paginas SSR sem login.
+ *   D. span/li/a no header com texto "seguidor/follower" — fallback antigo.
  *
- * Retorna null se nao conseguir extrair (perfil privado, conta suspensa,
- * redirect pra login, etc).
+ * Aguarda ate 8s pelo header popular (waitForFunction) — fix 24.3 cobre
+ * SPA do IG demorando >2.5s pra renderizar.
+ *
+ * Retorna `{followersCount, reason?}`. reason eh pra log/debug quando falha.
  */
-async function getProfileStats(page: Page, igUsername: string): Promise<{ followersCount: number | null }> {
+async function getProfileStats(page: Page, igUsername: string): Promise<{ followersCount: number | null; reason?: string }> {
   try {
     await page.goto(`https://www.instagram.com/${igUsername}/`, {
       waitUntil: 'domcontentloaded',
       timeout: 20_000,
     });
-    await humanDelay(1500, 2500);
-    const followersCount = await page.evaluate(() => {
+
+    // FIX 24.3: aguarda elemento de stats aparecer (max 8s) — antes era
+    // humanDelay fixo de 1.5-2.5s que era curto pra SPA do IG.
+    await page.waitForFunction(
+      () => {
+        return (
+          document.querySelector('a[href*="/followers"]') !== null ||
+          document.querySelector('header section ul') !== null
+        );
+      },
+      { timeout: 8_000 }
+    ).catch(() => undefined);
+    await humanDelay(800, 1500); // jitter humano
+
+    const finalUrl = page.url();
+    if (!finalUrl.includes(`/${igUsername}`)) {
+      return { followersCount: null, reason: `redirect:${finalUrl.slice(0, 60)}` };
+    }
+
+    const result = await page.evaluate((u: string) => {
       function parseCount(raw: string): number | null {
         const s = raw.trim().replace(/\s/g, '').toLowerCase();
         const m = s.match(/^([\d.,]+)([kmb]?)$/);
         if (!m) return null;
-        // PT-BR usa "." como milhar e "," como decimal. EN usa o oposto.
-        // Heuristica: se tem K/M/B, eh formato curto onde o "." eh decimal
-        // (ex: "1.2K"). Se nao, "." eh milhar (ex: "1.234.567").
-        const numStr = m[2]
-          ? m[1].replace(/,/g, '.')
-          : m[1].replace(/[.,]/g, '');
+        const numStr = m[2] ? m[1].replace(/,/g, '.') : m[1].replace(/[.,]/g, '');
         const num = parseFloat(numStr);
         if (isNaN(num)) return null;
         const mult = m[2] === 'k' ? 1000 : m[2] === 'm' ? 1_000_000 : m[2] === 'b' ? 1_000_000_000 : 1;
         return Math.round(num * mult);
       }
 
-      // Estrategia 1: meta og:description
+      // FIX 24.3 — Estrategia A (PRIORITARIA): <a href="/<u>/followers/"> title="N"
+      // IG poe o numero EXATO no title pra acessibilidade. Mais robusto que
+      // parsear texto formatado (1.2K).
+      const followersLink = document.querySelector(
+        `a[href*="/${u}/followers"], a[href*="/${u}/followers/"]`
+      ) as HTMLAnchorElement | null;
+      if (followersLink) {
+        const titleAttr = followersLink.getAttribute('title');
+        if (titleAttr) {
+          const n = parseInt(titleAttr.replace(/[^\d]/g, ''), 10);
+          if (!isNaN(n) && n > 0) return { count: n, source: 'link_title' };
+        }
+        // Fallback: span dentro do link com title ou texto
+        const span = followersLink.querySelector('span');
+        if (span) {
+          const titleSpan = span.getAttribute('title');
+          if (titleSpan) {
+            const n = parseInt(titleSpan.replace(/[^\d]/g, ''), 10);
+            if (!isNaN(n) && n > 0) return { count: n, source: 'span_title' };
+          }
+          const txt = (span.textContent || '').trim();
+          const n2 = parseCount(txt);
+          if (n2 !== null) return { count: n2, source: 'span_text' };
+        }
+      }
+
+      // Estrategia C: meta og:description
       const meta = document.querySelector('meta[property="og:description"]');
       if (meta) {
         const content = meta.getAttribute('content') || '';
         const match = content.match(/([\d.,KMB]+)\s*(?:Followers|Seguidores|Folgende)/i);
         if (match) {
           const n = parseCount(match[1]);
-          if (n !== null) return n;
+          if (n !== null) return { count: n, source: 'og' };
         }
       }
-      // Estrategia 2: span no header
+
+      // Estrategia D: span/li/a no header (texto)
       const spans = Array.from(document.querySelectorAll('header span, header li, header a'));
       for (const s of spans) {
         const txt = (s.textContent || '');
@@ -152,15 +196,32 @@ async function getProfileStats(page: Page, igUsername: string): Promise<{ follow
           const numMatch = txt.match(/([\d.,]+\s*[KMBkmb]?)/);
           if (numMatch) {
             const n = parseCount(numMatch[1]);
-            if (n !== null) return n;
+            if (n !== null) return { count: n, source: 'header_text' };
           }
         }
       }
-      return null;
-    }).catch(() => null);
-    return { followersCount };
-  } catch {
-    return { followersCount: null };
+
+      // Diagnostico: retorna preview do body pra logar
+      return {
+        count: null,
+        source: 'none',
+        preview: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 200),
+      };
+    }, igUsername).catch(() => ({ count: null, source: 'evaluate_error' as const }));
+
+    if (result.count !== null) {
+      return { followersCount: result.count };
+    }
+    const preview = (result as { preview?: string }).preview;
+    return {
+      followersCount: null,
+      reason: `parse_failed:source=${result.source}${preview ? ` preview="${preview.slice(0, 80)}"` : ''}`,
+    };
+  } catch (err) {
+    return {
+      followersCount: null,
+      reason: `err:${err instanceof Error ? err.message.slice(0, 80) : 'unknown'}`,
+    };
   }
 }
 
@@ -2093,16 +2154,19 @@ export const realDriver: AutomationDriver = {
     return Array.from(sessions.keys());
   },
 
-  // FIX 21: pega followers count do perfil IG vinculado a esse adsPowerId.
-  // Reusa a sessao Playwright atual (assume bot ja esta logado) — chamar
-  // depois de ensureLoggedIn pra garantir.
-  async getFollowers(adsPowerId: string, igUsername: string): Promise<number | null> {
+  // FIX 21 + FIX 24.3: pega followers count do perfil IG vinculado a esse
+  // adsPowerId. Reusa a sessao Playwright atual (assume bot ja esta logado)
+  // — chamar depois de ensureLoggedIn pra garantir.
+  // Retorna `reason` quando falha (pra debug na UI/log).
+  async getFollowers(adsPowerId: string, igUsername: string): Promise<{ followersCount: number | null; reason?: string }> {
     try {
       const page = await getPage(adsPowerId);
-      const stats = await getProfileStats(page, igUsername);
-      return stats.followersCount;
-    } catch {
-      return null;
+      return await getProfileStats(page, igUsername);
+    } catch (err) {
+      return {
+        followersCount: null,
+        reason: `getPage_err:${err instanceof Error ? err.message.slice(0, 60) : 'unknown'}`,
+      };
     }
   },
 };

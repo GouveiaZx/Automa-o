@@ -310,18 +310,19 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
           await driver.closeProfile(adsId).catch(() => undefined);
           continue;
         }
-        const count = driver.getFollowers
-          ? await driver.getFollowers(adsId, acc.username).catch(() => null)
-          : null;
+        const stats = driver.getFollowers
+          ? await driver.getFollowers(adsId, acc.username).catch(() => ({ followersCount: null as number | null, reason: 'caller_threw' as string | undefined }))
+          : { followersCount: null as number | null, reason: 'driver_no_getfollowers' as string | undefined };
         await driver.closeProfile(adsId).catch(() => undefined);
-        if (count !== null) {
+        if (stats.followersCount !== null) {
           await prisma.instagramAccount.update({
             where: { id: acc.id },
-            data: { followersCount: count, followersUpdatedAt: new Date() },
+            data: { followersCount: stats.followersCount, followersUpdatedAt: new Date() },
           });
           updated++;
         } else {
-          failed.push(`@${acc.username}: nao conseguiu ler followers`);
+          // FIX 24.3: inclui reason real (parse_failed:source=none, redirect:..., etc)
+          failed.push(`@${acc.username}: ${stats.reason ?? 'nao conseguiu ler followers'}`);
         }
       } catch (err) {
         failed.push(`@${acc.username}: ${err instanceof Error ? err.message : 'erro'}`);
@@ -330,6 +331,34 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     }
 
     return { ok: true, total: accounts.length, updated, failedCount: failed.length, failed: failed.slice(0, 20) };
+  });
+
+  // Bulk update campaign (FIX 24.2): troca campaignId de N contas IG de uma
+  // vez. Aceita null pra remover campanha. Valida campaignId existe se
+  // fornecido (FIX 22.1 padrao defensivo).
+  app.post('/accounts/bulk-update-campaign', async (req, reply) => {
+    const parsed = z.object({
+      ids: z.array(z.string()).min(1),
+      campaignId: z.string().nullable(), // null = remover campanha
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'invalid_body', details: parsed.error.flatten() });
+    }
+    const { ids, campaignId } = parsed.data;
+    if (campaignId) {
+      const exists = await prisma.campaign.findUnique({ where: { id: campaignId } });
+      if (!exists) {
+        return reply.status(400).send({
+          error: 'campaign_not_found',
+          message: `Campanha id=${campaignId} nao existe`,
+        });
+      }
+    }
+    const result = await prisma.instagramAccount.updateMany({
+      where: { id: { in: ids } },
+      data: { campaignId },
+    });
+    return { ok: true, updated: result.count };
   });
 
   // Auto-create from AdsPower profiles (FIX 20): pra cada perfil AdsPower

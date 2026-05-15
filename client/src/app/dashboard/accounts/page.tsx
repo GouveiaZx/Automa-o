@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import type { AdsPowerProfile, Campaign, InstagramAccount } from '@automacao/shared';
-import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2, RotateCw, Link2 } from 'lucide-react';
+import { Trash2, Plus, Play, Pause, RefreshCw, Loader2, CheckCircle2, RotateCw, Link2, Layers } from 'lucide-react';
 import { connectSse } from '@/lib/sse';
 
 interface AccountProgress {
@@ -145,6 +145,39 @@ export default function AccountsPage() {
   const [autoCreateCampaignId, setAutoCreateCampaignId] = useState<string>('');
   const [autoCreateGroupName, setAutoCreateGroupName] = useState<string>('');
   const [autoCreateSelectedProfileIds, setAutoCreateSelectedProfileIds] = useState<Set<string>>(new Set());
+  // FIX 24.2: bulk edit campanha
+  const [bulkCampaignOpen, setBulkCampaignOpen] = useState(false);
+  const [bulkCampaignTarget, setBulkCampaignTarget] = useState<string>('');
+  const [bulkCampaignBusy, setBulkCampaignBusy] = useState(false);
+
+  function openBulkCampaign() {
+    if (selected.size === 0) return;
+    setBulkCampaignTarget('');
+    setBulkCampaignOpen(true);
+  }
+
+  async function applyBulkCampaign() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    setBulkCampaignBusy(true);
+    try {
+      const r = await api<{ ok: boolean; updated: number }>('/api/accounts/bulk-update-campaign', {
+        method: 'POST',
+        body: { ids, campaignId: bulkCampaignTarget || null },
+      });
+      const campaignName = bulkCampaignTarget
+        ? campaigns.find((c) => c.id === bulkCampaignTarget)?.name ?? '?'
+        : '(sem campanha)';
+      alert(`${r.updated} conta(s) movidas para: ${campaignName}`);
+      setBulkCampaignOpen(false);
+      setSelected(new Set());
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'erro ao trocar campanha');
+    } finally {
+      setBulkCampaignBusy(false);
+    }
+  }
   const [syncingFollowers, setSyncingFollowers] = useState(false);
 
   async function syncFollowers() {
@@ -466,6 +499,61 @@ export default function AccountsPage() {
         </p>
       </header>
 
+      {bulkCampaignOpen && (
+        <Card className="border-primary/40">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Layers className="h-4 w-4" /> Trocar campanha de {selected.size} conta{selected.size > 1 ? 's' : ''}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              Escolhe a nova campanha (ou "sem campanha"). Aplica em todas as contas selecionadas.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label>Nova campanha</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                  value={bulkCampaignTarget}
+                  onChange={(e) => setBulkCampaignTarget(e.target.value)}
+                  disabled={bulkCampaignBusy}
+                >
+                  <option value="">— sem campanha —</option>
+                  {campaigns
+                    .slice()
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                </select>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setBulkCampaignOpen(false)}
+                  disabled={bulkCampaignBusy}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  onClick={applyBulkCampaign}
+                  disabled={bulkCampaignBusy}
+                >
+                  {bulkCampaignBusy ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Aplicando...</>
+                  ) : (
+                    <><Layers className="h-4 w-4 mr-2" /> Aplicar</>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {autoCreateOpen && (() => {
         const orphanProfiles = profiles
           .filter((p) => !items.some((a) => a.adsPowerProfileId === p.id))
@@ -776,6 +864,17 @@ export default function AccountsPage() {
                   ) : (
                     <><RotateCw className="h-4 w-4 mr-2" /> Reagendar {selected.size} ciclo{selected.size > 1 ? 's' : ''}</>
                   )}
+                </Button>
+              )}
+              {selected.size > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={openBulkCampaign}
+                  disabled={bulkCampaignBusy || bulkDeleting || bulkRestarting || bulkValidating}
+                  title="Trocar a campanha das contas selecionadas"
+                >
+                  <Layers className="h-4 w-4 mr-2" /> Trocar campanha de {selected.size}
                 </Button>
               )}
               {selected.size > 0 && (
