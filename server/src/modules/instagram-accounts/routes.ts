@@ -4,6 +4,7 @@ import { instagramAccountInputSchema, accountStatusUpdateSchema, syncBioSchema }
 import { prisma } from '../../prisma.js';
 import { bus } from '../../events.js';
 import { getDriver } from '../../automation/driver.js';
+import { adsPowerClient, AdsPowerError } from '../../automation/adspower-client.js';
 import { appLog } from '../../logger.js';
 import { scheduleNextForAccount } from '../../automation/scheduler.js';
 
@@ -182,12 +183,42 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
 
   app.delete('/accounts/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    try {
-      await prisma.instagramAccount.delete({ where: { id } });
-      return { ok: true };
-    } catch {
-      return reply.status(404).send({ error: 'not_found' });
+    // FIX 23: opt-in cascade — query ?cascadeAdsPower=true tambem deleta o
+    // perfil AdsPower vinculado (no DB local + no proprio app AdsPower).
+    // Default false pra preservar compat e evitar destrutivo acidental.
+    const q = req.query as { cascadeAdsPower?: string };
+    const cascadeAdsPower = q.cascadeAdsPower === 'true' || q.cascadeAdsPower === '1';
+
+    const account = await prisma.instagramAccount.findUnique({
+      where: { id },
+      include: { adsPowerProfile: true },
+    });
+    if (!account) return reply.status(404).send({ error: 'not_found' });
+
+    let adsPowerDeletedAt: 'app' | 'app_failed' | 'db_only' | 'no_profile' = 'no_profile';
+    if (cascadeAdsPower && account.adsPowerProfile) {
+      const adsPowerId = account.adsPowerProfile.adsPowerId;
+      // Tenta deletar do AdsPower app primeiro (irreversivel). Se falhar,
+      // ainda deleta do DB pra nao deixar orfao.
+      try {
+        await adsPowerClient.deleteProfile(adsPowerId);
+        adsPowerDeletedAt = 'app';
+      } catch (err) {
+        adsPowerDeletedAt = 'app_failed';
+        await appLog({
+          source: 'api',
+          level: 'warn',
+          message: `AdsPower deleteProfile falhou pra ${adsPowerId}: ${err instanceof Error ? err.message : 'unknown'}. Deletando so do DB local.`,
+          accountId: id,
+        });
+      }
+      // Deleta do DB local (independente do resultado AdsPower app)
+      await prisma.adsPowerProfile.delete({ where: { id: account.adsPowerProfile.id } }).catch(() => undefined);
+      if (adsPowerDeletedAt === 'app_failed') adsPowerDeletedAt = 'db_only';
     }
+
+    await prisma.instagramAccount.delete({ where: { id } });
+    return { ok: true, adsPower: adsPowerDeletedAt };
   });
 
   // Auto-link (FIX 18): vincula contas IG SEM perfil AdsPower aos perfis
@@ -406,13 +437,61 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
   // Bulk delete (FIX 14): exclui N contas IG de uma vez. Usa deleteMany numa
   // transacao implicita do Prisma — atomico. Jobs/media relacionados sao
   // tratados pelas FKs do schema (cascade onde definido).
+  // FIX 23: cascadeAdsPower: boolean — opt-in pra tambem deletar perfis
+  // AdsPower vinculados (DB local + app AdsPower). Default false (defensivo).
   app.post('/accounts/bulk-delete', async (req, reply) => {
-    const parsed = z.object({ ids: z.array(z.string()).min(1) }).safeParse(req.body);
+    const parsed = z.object({
+      ids: z.array(z.string()).min(1),
+      cascadeAdsPower: z.boolean().optional().default(false),
+    }).safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_body' });
+    const { ids, cascadeAdsPower } = parsed.data;
+
+    let adsPowerAppDeleted = 0;
+    let adsPowerAppFailed = 0;
+    const adsPowerErrors: string[] = [];
+
+    if (cascadeAdsPower) {
+      // Pega perfis AdsPower vinculados ANTES de deletar contas (Prisma SetNull
+      // limparia adsPowerProfileId no delete da conta, perdendo a referencia).
+      const accountsWithProfile = await prisma.instagramAccount.findMany({
+        where: { id: { in: ids }, adsPowerProfileId: { not: null } },
+        include: { adsPowerProfile: true },
+      });
+      // Deleta de cada AdsPower app sequencialmente (rate-limit 1 req/s).
+      for (const acc of accountsWithProfile) {
+        if (!acc.adsPowerProfile) continue;
+        try {
+          await adsPowerClient.deleteProfile(acc.adsPowerProfile.adsPowerId);
+          adsPowerAppDeleted++;
+        } catch (err) {
+          adsPowerAppFailed++;
+          adsPowerErrors.push(
+            `@${acc.username}: ${err instanceof Error ? err.message.slice(0, 80) : 'erro'}`
+          );
+        }
+      }
+      // Deleta os perfis do DB local (independente do resultado AdsPower app)
+      const profileIds = accountsWithProfile
+        .map((a) => a.adsPowerProfile?.id)
+        .filter(Boolean) as string[];
+      if (profileIds.length > 0) {
+        await prisma.adsPowerProfile.deleteMany({
+          where: { id: { in: profileIds } },
+        });
+      }
+    }
+
     const result = await prisma.instagramAccount.deleteMany({
-      where: { id: { in: parsed.data.ids } },
+      where: { id: { in: ids } },
     });
-    return { ok: true, deleted: result.count };
+    return {
+      ok: true,
+      deleted: result.count,
+      adsPowerAppDeleted,
+      adsPowerAppFailed,
+      adsPowerErrors: adsPowerErrors.slice(0, 20),
+    };
   });
 
   // Progresso por conta — agregado de jobs do dia (queued/running/retry/failed/done).

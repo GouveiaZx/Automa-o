@@ -136,6 +136,36 @@ export const adsPowerClient = {
     await call<unknown>('/api/v1/browser/stop', { user_id: userId });
   },
 
+  // FIX 23: deleta um perfil DO PROPRIO ADSPOWER (irreversivel — perde cookies,
+  // fingerprint, login). Endpoint /api/v1/user/delete aceita POST com body
+  // { user_ids: [...] }. Throttle aplicado via call() helper... mas call()
+  // so faz GET. Implementamos POST inline aqui pra esse endpoint especifico.
+  async deleteProfile(userId: string): Promise<void> {
+    await throttle();
+    const url = new URL('/api/v1/user/delete', env.ADSPOWER_API_URL);
+    if (env.ADSPOWER_API_KEY) {
+      url.searchParams.set('api_key', env.ADSPOWER_API_KEY);
+    }
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_ids: [userId] }),
+      });
+    } catch (err) {
+      throw new AdsPowerError(
+        -1,
+        `Falha ao conectar em ${env.ADSPOWER_API_URL}: ${err instanceof Error ? err.message : 'unknown'}. AdsPower está rodando?`
+      );
+    }
+    if (!res.ok) throw new AdsPowerError(res.status, `HTTP ${res.status}`);
+    const json = (await res.json()) as { code: number; msg: string };
+    if (json.code !== 0) {
+      throw new AdsPowerError(json.code, json.msg || 'erro desconhecido do AdsPower delete');
+    }
+  },
+
   async browserStatus(userId: string): Promise<'Active' | 'Inactive'> {
     const data = await call<{ status: string }>('/api/v1/browser/active', { user_id: userId });
     return data.status === 'Active' ? 'Active' : 'Inactive';

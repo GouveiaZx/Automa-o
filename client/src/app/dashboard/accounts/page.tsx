@@ -254,17 +254,41 @@ export default function AccountsPage() {
     if (ids.length === 0) return;
     if (
       !confirm(
-        `EXCLUIR ${ids.length} conta${ids.length > 1 ? 's' : ''} Instagram do painel?\n\nIsso apaga as contas e todos os jobs/historico delas. NAO afeta o IG nem o AdsPower — so remove do painel. Acao IRREVERSIVEL.`
+        `EXCLUIR ${ids.length} conta${ids.length > 1 ? 's' : ''} Instagram do painel?\n\nIsso apaga as contas e todos os jobs/historico delas no painel. Acao IRREVERSIVEL.`
       )
     )
       return;
+    // FIX 23: pergunta separada se quer cascade pro AdsPower
+    const linkedCount = items.filter(
+      (a) => ids.includes(a.id) && a.adsPowerProfile
+    ).length;
+    let cascadeAdsPower = false;
+    if (linkedCount > 0) {
+      cascadeAdsPower = confirm(
+        `${linkedCount} conta(s) selecionada(s) tem perfil AdsPower vinculado.\n\nTambem DELETAR esses perfis do AdsPower (no proprio app + painel)?\n\n  OK = deleta tudo (perfis perdem cookies/login pra sempre)\n  Cancelar = so deleta as contas IG do painel, perfis AdsPower ficam intactos`
+      );
+    }
     setBulkDeleting(true);
     try {
-      const r = await api<{ ok: boolean; deleted: number }>('/api/accounts/bulk-delete', {
+      const r = await api<{
+        ok: boolean;
+        deleted: number;
+        adsPowerAppDeleted: number;
+        adsPowerAppFailed: number;
+        adsPowerErrors: string[];
+      }>('/api/accounts/bulk-delete', {
         method: 'POST',
-        body: { ids },
+        body: { ids, cascadeAdsPower },
       });
-      alert(`${r.deleted} conta(s) excluida(s).`);
+      const lines = [`${r.deleted} conta(s) IG excluida(s).`];
+      if (cascadeAdsPower) {
+        lines.push(`${r.adsPowerAppDeleted} perfil(is) AdsPower deletado(s).`);
+        if (r.adsPowerAppFailed > 0) {
+          lines.push(`${r.adsPowerAppFailed} falha(s) ao deletar AdsPower:`);
+          lines.push(...r.adsPowerErrors);
+        }
+      }
+      alert(lines.join('\n'));
       setSelected(new Set());
       load();
     } catch (err) {
@@ -303,7 +327,16 @@ export default function AccountsPage() {
 
   async function remove(id: string) {
     if (!confirm('Excluir conta?')) return;
-    await api(`/api/accounts/${id}`, { method: 'DELETE' });
+    // FIX 23: pergunta separada pro cascade AdsPower
+    const acc = items.find((a) => a.id === id);
+    let cascade = false;
+    if (acc?.adsPowerProfile) {
+      cascade = confirm(
+        `Conta tem perfil AdsPower vinculado (${acc.adsPowerProfile.name}).\n\nTambem DELETAR esse perfil do AdsPower (app + painel)?\n\n  OK = deleta tudo (perfil perde cookies/login pra sempre)\n  Cancelar = so deleta a conta IG do painel`
+      );
+    }
+    const url = `/api/accounts/${id}${cascade ? '?cascadeAdsPower=true' : ''}`;
+    await api(url, { method: 'DELETE' });
     load();
   }
 
