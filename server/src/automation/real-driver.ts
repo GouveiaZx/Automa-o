@@ -101,16 +101,37 @@ async function getLatestPostUrl(page: Page, igUsername: string): Promise<string 
 }
 
 /**
- * FIX 21 + FIX 24.3: navega pro perfil IG e extrai contador de seguidores.
- * Usa 3 estrategias em ordem de preferencia:
- *   A. <a href="/u/followers/" title="N">       — numero EXATO no atributo title
- *      do link de followers (acessibilidade). Funciona quando user esta logado.
- *   B. <span title="N"> dentro do link de followers — fallback.
- *   C. meta og:description                       — pra paginas SSR sem login.
- *   D. span/li/a no header com texto "seguidor/follower" — fallback antigo.
+ * Helper: parseia numero curto formato IG ("1.2K", "3.5M", "1,234", etc).
+ * PT-BR usa "." como milhar e "," como decimal. EN usa o oposto. Heuristica:
+ * se tem K/M/B, "." eh decimal. Sem sufixo, "." eh milhar.
+ */
+function parseShortNumber(raw: string): number | null {
+  const s = raw.trim().replace(/\s/g, '').toLowerCase();
+  const m = s.match(/^([\d.,]+)([kmb]?)$/);
+  if (!m) return null;
+  const numStr = m[2] ? m[1].replace(/,/g, '.') : m[1].replace(/[.,]/g, '');
+  const num = parseFloat(numStr);
+  if (isNaN(num)) return null;
+  const mult = m[2] === 'k' ? 1000 : m[2] === 'm' ? 1_000_000 : m[2] === 'b' ? 1_000_000_000 : 1;
+  return Math.round(num * mult);
+}
+
+/**
+ * FIX 21 + 24.3 + 24.4: navega pro perfil IG e extrai contador de seguidores.
  *
- * Aguarda ate 8s pelo header popular (waitForFunction) — fix 24.3 cobre
- * SPA do IG demorando >2.5s pra renderizar.
+ * Historia:
+ * - FIX 21: 2 estrategias em page.evaluate, humanDelay fixo
+ * - FIX 24.3: aumentou waitForFunction + 4 estrategias + diagnostic
+ * - FIX 24.4: TROCOU page.evaluate por Playwright locators (auto-retry built-in)
+ *   pra resolver `parse_failed:source=evaluate_error` que pegava 100% das contas.
+ *   Causa raiz: page.evaluate dava exception (provavelmente "Execution context
+ *   destroyed" quando IG faz soft redirect/navigation mid-execucao).
+ *
+ * Estrategias em ordem de prioridade:
+ *   A. Locator: <a href="/u/followers"> title="N"  — numero EXATO acessibilidade
+ *   B. Locator: span dentro do link de followers (title ou texto)
+ *   C. Locator: meta og:description                — fallback SSR anonimo
+ *   D. page.content() + regex                       — ultimo recurso sem evaluate
  *
  * Retorna `{followersCount, reason?}`. reason eh pra log/debug quando falha.
  */
@@ -121,106 +142,130 @@ async function getProfileStats(page: Page, igUsername: string): Promise<{ follow
       timeout: 20_000,
     });
 
-    // FIX 24.3: aguarda elemento de stats aparecer (max 8s) — antes era
-    // humanDelay fixo de 1.5-2.5s que era curto pra SPA do IG.
-    await page.waitForFunction(
-      () => {
-        return (
-          document.querySelector('a[href*="/followers"]') !== null ||
-          document.querySelector('header section ul') !== null
-        );
-      },
-      { timeout: 8_000 }
-    ).catch(() => undefined);
-    await humanDelay(800, 1500); // jitter humano
+    // Aguarda ate networkidle OU follower link visivel (race, max 8s cada).
+    // Codex P2: marca explicitamente como qual condicao resolveu, pra ajustar
+    // timeouts subsequentes — se timeout total, nao gasta mais tempo nas estrategias.
+    const raceResult = await Promise.race([
+      page.waitForLoadState('networkidle', { timeout: 8_000 }).then(() => 'networkidle' as const).catch(() => 'timeout' as const),
+      page.waitForSelector(`a[href*="/${igUsername}/followers"]`, { timeout: 8_000 }).then(() => 'selector' as const).catch(() => 'timeout' as const),
+    ]);
+    await page.waitForTimeout(500); // pequeno settle
+    // Se nao chegou pelo selector, encurta os timeouts das proximas estrategias
+    // (pagina pode nem ter renderizado stats, nao adianta esperar 5s em cada locator)
+    const stratTimeout = raceResult === 'selector' ? 5_000 : 2_000;
 
+    // Codex P1: parse pathname pra comparar segmento EXATO (case-insensitive).
+    // Antes finalUrl.includes(`/${u}`) matchava `/xyz123/` quando username era `xyz`,
+    // potencialmente lendo followers do perfil errado.
     const finalUrl = page.url();
-    if (!finalUrl.includes(`/${igUsername}`)) {
+    let urlMatchesProfile = false;
+    try {
+      const u = new URL(finalUrl);
+      const seg = u.pathname.split('/').filter(Boolean)[0];
+      urlMatchesProfile = (seg ?? '').toLowerCase() === igUsername.toLowerCase();
+    } catch {
+      /* URL invalida */
+    }
+    if (!urlMatchesProfile) {
       return { followersCount: null, reason: `redirect:${finalUrl.slice(0, 60)}` };
     }
 
-    const result = await page.evaluate((u: string) => {
-      function parseCount(raw: string): number | null {
-        const s = raw.trim().replace(/\s/g, '').toLowerCase();
-        const m = s.match(/^([\d.,]+)([kmb]?)$/);
-        if (!m) return null;
-        const numStr = m[2] ? m[1].replace(/,/g, '.') : m[1].replace(/[.,]/g, '');
-        const num = parseFloat(numStr);
-        if (isNaN(num)) return null;
-        const mult = m[2] === 'k' ? 1000 : m[2] === 'm' ? 1_000_000 : m[2] === 'b' ? 1_000_000_000 : 1;
-        return Math.round(num * mult);
+    // ESTRATEGIA A (PRIORITARIA): locator + title attr, escopado ao header
+    // pra evitar bater em links clone fora do perfil (Codex P2).
+    try {
+      const followersLink = page
+        .locator(`header a[href*="/${igUsername}/followers"], main a[href*="/${igUsername}/followers"]`)
+        .first();
+      // Espera visivel antes de ler attr — evita gastar timeout em node hidden
+      await followersLink.waitFor({ state: 'visible', timeout: stratTimeout }).catch(() => undefined);
+
+      const titleAttr = await followersLink.getAttribute('title', { timeout: 2_000 }).catch(() => null);
+      if (titleAttr) {
+        const n = parseInt(titleAttr.replace(/[^\d]/g, ''), 10);
+        if (!isNaN(n) && n > 0) return { followersCount: n };
       }
-
-      // FIX 24.3 — Estrategia A (PRIORITARIA): <a href="/<u>/followers/"> title="N"
-      // IG poe o numero EXATO no title pra acessibilidade. Mais robusto que
-      // parsear texto formatado (1.2K).
-      const followersLink = document.querySelector(
-        `a[href*="/${u}/followers"], a[href*="/${u}/followers/"]`
-      ) as HTMLAnchorElement | null;
-      if (followersLink) {
-        const titleAttr = followersLink.getAttribute('title');
-        if (titleAttr) {
-          const n = parseInt(titleAttr.replace(/[^\d]/g, ''), 10);
-          if (!isNaN(n) && n > 0) return { count: n, source: 'link_title' };
-        }
-        // Fallback: span dentro do link com title ou texto
-        const span = followersLink.querySelector('span');
-        if (span) {
-          const titleSpan = span.getAttribute('title');
-          if (titleSpan) {
-            const n = parseInt(titleSpan.replace(/[^\d]/g, ''), 10);
-            if (!isNaN(n) && n > 0) return { count: n, source: 'span_title' };
-          }
-          const txt = (span.textContent || '').trim();
-          const n2 = parseCount(txt);
-          if (n2 !== null) return { count: n2, source: 'span_text' };
-        }
+      // Sub-fallback: span dentro do link com title (numero exato) ou texto (1.2K)
+      const span = followersLink.locator('span').first();
+      const spanTitle = await span.getAttribute('title', { timeout: 1_500 }).catch(() => null);
+      if (spanTitle) {
+        const n = parseInt(spanTitle.replace(/[^\d]/g, ''), 10);
+        if (!isNaN(n) && n > 0) return { followersCount: n };
       }
-
-      // Estrategia C: meta og:description
-      const meta = document.querySelector('meta[property="og:description"]');
-      if (meta) {
-        const content = meta.getAttribute('content') || '';
-        const match = content.match(/([\d.,KMB]+)\s*(?:Followers|Seguidores|Folgende)/i);
-        if (match) {
-          const n = parseCount(match[1]);
-          if (n !== null) return { count: n, source: 'og' };
-        }
+      const spanText = await span.textContent({ timeout: 1_500 }).catch(() => null);
+      if (spanText) {
+        const n = parseShortNumber(spanText);
+        if (n !== null) return { followersCount: n };
       }
-
-      // Estrategia D: span/li/a no header (texto)
-      const spans = Array.from(document.querySelectorAll('header span, header li, header a'));
-      for (const s of spans) {
-        const txt = (s.textContent || '');
-        if (/seguidor|follower|folgende/i.test(txt)) {
-          const numMatch = txt.match(/([\d.,]+\s*[KMBkmb]?)/);
-          if (numMatch) {
-            const n = parseCount(numMatch[1]);
-            if (n !== null) return { count: n, source: 'header_text' };
-          }
-        }
-      }
-
-      // Diagnostico: retorna preview do body pra logar
-      return {
-        count: null,
-        source: 'none',
-        preview: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 200),
-      };
-    }, igUsername).catch(() => ({ count: null, source: 'evaluate_error' as const }));
-
-    if (result.count !== null) {
-      return { followersCount: result.count };
+    } catch {
+      /* fallthrough pra prox estrategia */
     }
-    const preview = (result as { preview?: string }).preview;
-    return {
-      followersCount: null,
-      reason: `parse_failed:source=${result.source}${preview ? ` preview="${preview.slice(0, 80)}"` : ''}`,
-    };
+
+    // ESTRATEGIA C: meta og:description via locator
+    try {
+      const metaContent = await page
+        .locator('meta[property="og:description"]')
+        .first()
+        .getAttribute('content', { timeout: 1_500 })
+        .catch(() => null);
+      if (metaContent) {
+        const match = metaContent.match(/([\d.,KMB]+)\s*(?:Followers|Seguidores|Folgende)/i);
+        if (match) {
+          const n = parseShortNumber(match[1]);
+          if (n !== null) return { followersCount: n };
+        }
+      }
+    } catch {
+      /* fallthrough */
+    }
+
+    // ESTRATEGIA D: page.content() + regex direto.
+    // Codex P2: escopa pra anchor de followers DESSE user pra evitar
+    // false-positive em script/JSON embedded.
+    try {
+      const html = await page.content();
+      // Remove script/style ANTES de qualquer regex pra evitar match em JSON embedded
+      const cleanHtml = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '');
+
+      // Padrao escopado: anchor /<u>/followers proximo de title="N"
+      const escapedUser = igUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const scopedMatch = cleanHtml.match(
+        new RegExp(`href="[^"]*\\/${escapedUser}\\/followers[^"]*"[\\s\\S]{0,500}?title="(\\d[\\d,.]*)"`, 'i')
+      );
+      if (scopedMatch) {
+        const n = parseInt(scopedMatch[1].replace(/[^\d]/g, ''), 10);
+        if (!isNaN(n) && n > 0) return { followersCount: n };
+      }
+      // Alternativa: title antes do href (DOM order varia)
+      const scopedMatch2 = cleanHtml.match(
+        new RegExp(`title="(\\d[\\d,.]*)"[\\s\\S]{0,500}?href="[^"]*\\/${escapedUser}\\/followers`, 'i')
+      );
+      if (scopedMatch2) {
+        const n = parseInt(scopedMatch2[1].replace(/[^\d]/g, ''), 10);
+        if (!isNaN(n) && n > 0) return { followersCount: n };
+      }
+
+      // Falhou tudo: preview pra debug (script/style ja removido)
+      const preview = cleanHtml
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 150);
+      return {
+        followersCount: null,
+        reason: `all_strategies_failed race=${raceResult} url=${finalUrl.slice(0, 40)} preview="${preview}"`,
+      };
+    } catch (err) {
+      return {
+        followersCount: null,
+        reason: `content_err:${err instanceof Error ? err.message.slice(0, 80) : 'unknown'}`,
+      };
+    }
   } catch (err) {
     return {
       followersCount: null,
-      reason: `err:${err instanceof Error ? err.message.slice(0, 80) : 'unknown'}`,
+      reason: `outer_err:${err instanceof Error ? err.message.slice(0, 80) : 'unknown'}`,
     };
   }
 }
