@@ -139,9 +139,12 @@ export default function AccountsPage() {
   const [autoCreating, setAutoCreating] = useState(false);
   // FIX 22.1: modal inline pra "Criar contas dos perfis" (substitui prompts feios
   // que pediam id de campanha — user colava nome e dava "erro ao criar" generico)
+  // FIX 23.1: agora com lista de checkbox dos perfis orfaos (default todos
+  // selecionados) — user desmarca os que NAO quer antes de criar.
   const [autoCreateOpen, setAutoCreateOpen] = useState(false);
   const [autoCreateCampaignId, setAutoCreateCampaignId] = useState<string>('');
   const [autoCreateGroupName, setAutoCreateGroupName] = useState<string>('');
+  const [autoCreateSelectedProfileIds, setAutoCreateSelectedProfileIds] = useState<Set<string>>(new Set());
   const [syncingFollowers, setSyncingFollowers] = useState(false);
 
   async function syncFollowers() {
@@ -175,15 +178,45 @@ export default function AccountsPage() {
   // Botao "Criar contas dos perfis" agora abre o modal inline em vez de
   // disparar 2 prompts de browser. Modal tem select real de campanha,
   // input de grupo, e botao Criar.
+  // FIX 23.1: ao abrir modal, pre-seleciona TODOS os perfis sem conta vinculada.
+  // User desmarca os que nao quer.
   function openAutoCreate() {
     if (autoCreating) return;
     setAutoCreateCampaignId('');
     setAutoCreateGroupName('');
+    const orphanIds = profiles
+      .filter((p) => !items.some((a) => a.adsPowerProfileId === p.id))
+      .map((p) => p.id);
+    setAutoCreateSelectedProfileIds(new Set(orphanIds));
     setAutoCreateOpen(true);
+  }
+
+  function toggleAutoCreateProfile(id: string) {
+    setAutoCreateSelectedProfileIds((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAutoCreateAll() {
+    const orphanIds = profiles
+      .filter((p) => !items.some((a) => a.adsPowerProfileId === p.id))
+      .map((p) => p.id);
+    if (autoCreateSelectedProfileIds.size === orphanIds.length) {
+      setAutoCreateSelectedProfileIds(new Set());
+    } else {
+      setAutoCreateSelectedProfileIds(new Set(orphanIds));
+    }
   }
 
   async function autoCreateFromProfiles() {
     if (autoCreating) return;
+    if (autoCreateSelectedProfileIds.size === 0) {
+      alert('Selecione pelo menos 1 perfil pra criar conta.');
+      return;
+    }
     setAutoCreating(true);
     try {
       const r = await api<{
@@ -197,6 +230,7 @@ export default function AccountsPage() {
         body: {
           campaignId: autoCreateCampaignId || null,
           groupName: autoCreateGroupName.trim() || null,
+          profileIds: Array.from(autoCreateSelectedProfileIds),
         },
       });
       const lines = [
@@ -432,15 +466,22 @@ export default function AccountsPage() {
         </p>
       </header>
 
-      {autoCreateOpen && (
+      {autoCreateOpen && (() => {
+        const orphanProfiles = profiles
+          .filter((p) => !items.some((a) => a.adsPowerProfileId === p.id))
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const allSelected =
+          orphanProfiles.length > 0 && autoCreateSelectedProfileIds.size === orphanProfiles.length;
+        return (
         <Card className="border-primary/40">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Plus className="h-4 w-4" /> Criar contas dos perfis AdsPower
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
-              Pra cada perfil AdsPower SEM conta IG vinculada, cria 1 conta IG nova com username =
-              nome do perfil. Defina (opcional) campanha e grupo padrao pras novas contas.
+              Marca os perfis AdsPower que voce quer criar conta IG (todos pre-selecionados).
+              Username sera o nome do perfil. Campanha e grupo abaixo sao opcionais.
             </p>
           </CardHeader>
           <CardContent>
@@ -471,6 +512,51 @@ export default function AccountsPage() {
                   disabled={autoCreating}
                 />
               </div>
+              <div className="md:col-span-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <Label>
+                    Perfis AdsPower sem conta ({autoCreateSelectedProfileIds.size}/{orphanProfiles.length} selecionados)
+                  </Label>
+                  {orphanProfiles.length > 0 && (
+                    <button
+                      type="button"
+                      className="text-xs text-primary hover:underline"
+                      onClick={toggleAutoCreateAll}
+                      disabled={autoCreating}
+                    >
+                      {allSelected ? 'Desmarcar todos' : 'Marcar todos'}
+                    </button>
+                  )}
+                </div>
+                {orphanProfiles.length === 0 ? (
+                  <div className="border rounded-md p-3 text-sm text-muted-foreground">
+                    Nenhum perfil AdsPower sem conta vinculada. Sincroniza no AdsPower primeiro.
+                  </div>
+                ) : (
+                  <div className="border rounded-md max-h-48 overflow-auto">
+                    {orphanProfiles.map((p) => {
+                      const checked = autoCreateSelectedProfileIds.has(p.id);
+                      return (
+                        <label
+                          key={p.id}
+                          className="flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleAutoCreateProfile(p.id)}
+                            disabled={autoCreating}
+                          />
+                          <span className="flex-1">{p.name}</span>
+                          {p.country && (
+                            <span className="text-xs text-muted-foreground">{p.country}</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div className="md:col-span-2 flex justify-end gap-2">
                 <Button
                   type="button"
@@ -483,19 +569,20 @@ export default function AccountsPage() {
                 <Button
                   type="button"
                   onClick={autoCreateFromProfiles}
-                  disabled={autoCreating}
+                  disabled={autoCreating || autoCreateSelectedProfileIds.size === 0}
                 >
                   {autoCreating ? (
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Criando...</>
                   ) : (
-                    <><Plus className="h-4 w-4 mr-2" /> Criar contas</>
+                    <><Plus className="h-4 w-4 mr-2" /> Criar {autoCreateSelectedProfileIds.size} conta{autoCreateSelectedProfileIds.size === 1 ? '' : 's'}</>
                   )}
                 </Button>
               </div>
             </div>
           </CardContent>
         </Card>
-      )}
+        );
+      })()}
 
       <Card>
         <CardHeader>

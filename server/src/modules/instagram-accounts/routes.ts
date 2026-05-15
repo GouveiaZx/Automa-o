@@ -342,6 +342,9 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     const parsed = z.object({
       campaignId: z.string().optional().nullable(),
       groupName: z.string().optional().nullable(),
+      // FIX 23.1: opcional — se fornecido, restringe a esses perfis especificos.
+      // Default = todos perfis sem conta vinculada (comportamento antigo).
+      profileIds: z.array(z.string()).optional(),
     }).safeParse(req.body ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: 'invalid_body', details: parsed.error.flatten() });
@@ -361,7 +364,13 @@ export async function instagramAccountRoutes(app: FastifyInstance) {
     }
 
     const orphanProfiles = await prisma.adsPowerProfile.findMany({
-      where: { account: { is: null } },
+      where: {
+        account: { is: null },
+        // FIX 23.1: se profileIds passados, filtra so os escolhidos pelo user
+        ...(defaults.profileIds && defaults.profileIds.length > 0
+          ? { id: { in: defaults.profileIds } }
+          : {}),
+      },
     });
 
     let created = 0;
