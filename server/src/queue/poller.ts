@@ -162,18 +162,20 @@ export async function startWorker(): Promise<void> {
 }
 
 async function autoFixMaxConcurrent(): Promise<void> {
-  // Se o env.MAX_CONCURRENT_PROFILES eh baixo (<=3, era o default antigo) E o
-  // setting do banco nao existe ou tambem eh baixo, cria/atualiza pra 20.
-  // Cliente que ja ajustou manualmente pra valor especifico nao eh tocado
-  // (so se for menor ou igual a 3).
-  if (env.MAX_CONCURRENT_PROFILES > 3) return; // env ja foi atualizado, OK
+  // Auto-elevacao defensiva pra clientes antigos com env=3 (default antigo) E
+  // que NUNCA tocaram nas Configuracoes do painel. Se setting existir no DB
+  // (em QUALQUER valor — 1, 2, 3...), respeita a escolha do user.
+  //
+  // FIX 25: antes, a logica "if (setting && current > 3) return" sobrescrevia
+  // user que deliberadamente setou 3 ou 4 pra ritmo lento. Bug reportado pelo
+  // Gustavo: "ja mudei na config so abrir 3 ou 4 perfil por vez... porem ele
+  // nao respeitou". Agora basta o setting existir pra preservar.
+  if (env.MAX_CONCURRENT_PROFILES > 3) return; // env atualizado, OK
   const setting = await prisma.appSetting.findUnique({
     where: { key: 'MAX_CONCURRENT_PROFILES' },
   });
-  if (setting) {
-    const current = parseInt(setting.value, 10);
-    if (Number.isFinite(current) && current > 3) return; // user ja configurou maior
-  }
+  if (setting) return; // user ja tocou nas Configuracoes — respeita o valor
+  // Setting NUNCA foi setado: cliente antigo com env default. Cria valor 20.
   await prisma.appSetting.upsert({
     where: { key: 'MAX_CONCURRENT_PROFILES' },
     update: { value: '20' },
@@ -183,7 +185,7 @@ async function autoFixMaxConcurrent(): Promise<void> {
   await appLog({
     source: 'worker',
     level: 'warn',
-    message: `MAX_CONCURRENT_PROFILES estava em ${env.MAX_CONCURRENT_PROFILES} (default antigo). Elevei pra 20 automaticamente. Ajuste em Configuracoes -> Performance se quiser outro valor.`,
+    message: `MAX_CONCURRENT_PROFILES nao estava setado (env=${env.MAX_CONCURRENT_PROFILES}). Criei com valor 20. Ajuste em Configuracoes -> Performance se quiser outro valor.`,
   });
 }
 
