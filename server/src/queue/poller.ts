@@ -197,8 +197,11 @@ async function autoFixActiveAccountsCap(): Promise<void> {
   const cap = parseInt(setting.value, 10);
   if (!Number.isFinite(cap) || cap <= 0) return;
   const activeCount = await prisma.instagramAccount.count({ where: { status: 'active' } });
-  if (activeCount > cap && cap === 1) {
-    // Cap default antigo (1) com mais contas — eleva
+  // FIX 26: SEMPRE elevar se cap < activeCount (antes era so quando cap===1).
+  // Gustavo setou cap=3 com 11 contas porque confundiu com paralelismo
+  // (MAX_CONCURRENT_PROFILES). Resultado: as 8 contas fora do top 3 alfabetico
+  // ficavam presas pra sempre na fila com erro "fora do top 3".
+  if (activeCount > cap) {
     const newValue = String(activeCount);
     await prisma.appSetting.update({
       where: { key: 'MAX_ACTIVE_ACCOUNTS' },
@@ -207,7 +210,7 @@ async function autoFixActiveAccountsCap(): Promise<void> {
     await appLog({
       source: 'worker',
       level: 'warn',
-      message: `MAX_ACTIVE_ACCOUNTS estava em 1 mas voce tem ${activeCount} conta(s) ativa(s). Elevei pro total automaticamente. Ajuste em Configuracoes se quiser limitar.`,
+      message: `MAX_ACTIVE_ACCOUNTS=${cap} mas voce tem ${activeCount} conta(s) ativa(s). Elevei pra ${activeCount} pra nao bloquear nenhuma. Pra LIMITAR de verdade, ajuste em Configuracoes -> "Limite de contas elegiveis".`,
     });
   }
 }

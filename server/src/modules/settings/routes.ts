@@ -43,4 +43,18 @@ export async function settingsRoutes(app: FastifyInstance) {
       create: { key, value: parsed.data.value },
     });
   });
+
+  // FIX 26: permite zerar/resetar uma setting (volta ao default do env).
+  // Usado pelo botao "Resetar (rodar todas)" no card MAX_ACTIVE_ACCOUNTS.
+  app.delete('/settings/:key', async (req, reply) => {
+    const { key } = req.params as { key: string };
+    if (!ALLOWED_SETTING_KEYS.has(key)) {
+      return reply.status(400).send({
+        error: 'unknown_setting_key',
+        allowed: Array.from(ALLOWED_SETTING_KEYS),
+      });
+    }
+    await prisma.appSetting.deleteMany({ where: { key } });
+    return { ok: true, key };
+  });
 }

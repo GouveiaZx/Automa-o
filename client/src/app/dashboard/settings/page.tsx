@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [data, setData] = useState<SettingsResponse | null>(null);
   const [maxActive, setMaxActive] = useState('');
   const [maxConcurrent, setMaxConcurrent] = useState('');
+  const [activeAccountsCount, setActiveAccountsCount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -31,9 +32,17 @@ export default function SettingsPage() {
     setData(r);
     const cur = r.stored.find((s) => s.key === 'MAX_ACTIVE_ACCOUNTS');
     if (cur) setMaxActive(cur.value);
+    else setMaxActive('');
     const concurrent = r.stored.find((s) => s.key === 'MAX_CONCURRENT_PROFILES');
     if (concurrent) setMaxConcurrent(concurrent.value);
     else setMaxConcurrent(String(r.runtime.MAX_CONCURRENT_PROFILES));
+    // FIX 26: conta contas active pra detectar cap < total e mostrar warning
+    try {
+      const accounts = await api<{ status: string }[]>('/api/accounts');
+      setActiveAccountsCount(accounts.filter((a) => a.status === 'active').length);
+    } catch {
+      /* ignore */
+    }
   }
 
   useEffect(() => {
@@ -47,6 +56,18 @@ export default function SettingsPage() {
         method: 'PUT',
         body: { value: maxActive },
       });
+      setSavedAt(Date.now());
+      load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resetMaxActive() {
+    if (!confirm('Apagar limite? Todas as contas ativas voltam a ser elegiveis.')) return;
+    setSaving(true);
+    try {
+      await api('/api/settings/MAX_ACTIVE_ACCOUNTS', { method: 'DELETE' });
       setSavedAt(Date.now());
       load();
     } finally {
@@ -114,16 +135,18 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Validação progressiva</CardTitle>
+          <CardTitle>Limite de contas elegíveis (avançado)</CardTitle>
           <CardDescription>
-            Limita quantas contas o worker processa simultaneamente. Use para subir cliente em
-            produção: comece com 1, valide, suba para 3, depois 7, 10, 20.
+            <strong className="text-amber-500">⚠️ Este NÃO é o limite de paralelismo</strong>{' '}
+            (esse é o card &quot;Performance&quot; acima). Aqui você limita QUAIS contas o worker
+            sequer considera (top N por ordem alfabética). As demais ficam IGNORADAS na fila.
+            Deixe vazio = todas as contas ativas rodam.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="space-y-1">
             <Label>MAX_ACTIVE_ACCOUNTS</Label>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <Input
                 type="number"
                 min={0}
@@ -135,10 +158,34 @@ export default function SettingsPage() {
               <Button onClick={saveMaxActive} disabled={saving}>
                 {saving ? 'Salvando...' : 'Salvar'}
               </Button>
+              <Button
+                variant="outline"
+                onClick={resetMaxActive}
+                disabled={saving || !maxActive}
+              >
+                Resetar (rodar todas)
+              </Button>
               {savedAt && Date.now() - savedAt < 3000 && (
                 <span className="self-center text-xs text-emerald-500">salvo ✓</span>
               )}
             </div>
+            {(() => {
+              const capNum = parseInt(maxActive, 10);
+              if (
+                Number.isFinite(capNum) &&
+                capNum > 0 &&
+                activeAccountsCount > capNum
+              ) {
+                return (
+                  <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                    ⚠️ Cap = {capNum} mas você tem {activeAccountsCount} contas ativas.{' '}
+                    <strong>{activeAccountsCount - capNum} contas estão sendo IGNORADAS</strong>{' '}
+                    pelo worker. Aumente o valor ou clique em &quot;Resetar&quot; pra rodar todas.
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <p className="text-xs text-muted-foreground">
               0 ou vazio = sem limite. Worker reflete a mudança no próximo ciclo (~5s).
             </p>
